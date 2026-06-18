@@ -57,7 +57,7 @@ LARGE_VALUE_CR = 0.5
 OI_CHANGE_PCT  = 5.0
 
 # ── AUTH via subprocess — SDK loads/runs/exits, freeing its memory ─────────────
-@st.cache_resource(ttl=1200, show_spinner=False)
+@st.cache_resource(ttl=60, show_spinner=False)
 def get_auth():
     """
     Spawns auth_helper.py as a subprocess.
@@ -73,26 +73,25 @@ def get_auth():
             timeout=240, env=env,
         )
         if proc.returncode != 0:
-            return None, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
+            return None, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
         stdout = proc.stdout.strip()
         if not stdout:
-            return None, {}, f"auth_helper no output. stderr: {proc.stderr[-300:]}"
+            return None, {}, {}, f"auth_helper no output. stderr: {proc.stderr[-300:]}"
         data = json.loads(stdout)
         if "error" in data:
-            return None, {}, f"auth error: {data['error']}"
-        # Force GC after subprocess finishes to reclaim any leaked memory
+            return None, {}, {}, f"auth error: {data['error']}"
         gc.collect()
         try:
             import ctypes
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except: pass
-        return data.get("session",{}), data.get("token_map",{}), None
+        return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), None
     except subprocess.TimeoutExpired:
-        return None, {}, "auth_helper timed out after 240s"
+        return None, {}, {}, "auth_helper timed out after 240s"
     except Exception as e:
-        return None, {}, str(e)
+        return None, {}, {}, str(e)
 
-session, token_map, auth_err = get_auth()
+session, token_map, sdk_quotes, auth_err = get_auth()
 
 # ── Build session headers from whatever the subprocess found ───────────────────
 def build_headers(session, ck):
@@ -111,28 +110,13 @@ def build_headers(session, ck):
         "neo-fin-key":   f"neotradeapi{sid}",
     }
 
-ck       = (session or {}).get("ck", os.environ.get("KOTAK_CONSUMER_KEY",""))
-HEADERS  = build_headers(session or {}, ck) if session else {}
-LIVE_URL = "https://gw-napi.kotaksecurities.com/market-data/oms/1.0/quotes/"
+ck = (session or {}).get("ck", os.environ.get("KOTAK_CONSUMER_KEY",""))
 
-# ── Raw HTTP live quote — no SDK needed ────────────────────────────────────────
-def live_quote(token, seg):
-    if not HEADERS or not token: return {}
-    exch_map={"nse_fo":("N","FO"),"nse_cm":("N","C"),"mcx_fo":("M","FO")}
-    exch,etype=exch_map.get(seg,("N","FO"))
-    try:
-        r=requests.get(LIVE_URL, headers=HEADERS, params={
-            "instrument_token":str(token),
-            "market_protection":"0",
-            "scrip_token":str(token),
-            "exch":exch,"exchType":etype,
-        }, timeout=8)
-        d=r.json()
-        items=d.get("data",d) if isinstance(d,dict) else d
-        if isinstance(items,list) and items: return items[0]
-        if isinstance(items,dict): return items
-    except: pass
-    return {}
+# ── Live quote from SDK-fetched quotes dict (passed by subprocess) ─────────────
+def live_quote(token, seg=None):
+    """Look up the pre-fetched quote for this token."""
+    if not token: return {}
+    return sdk_quotes.get(str(token), {})
 
 # ── Field extractors ──────────────────────────────────────────────────────────
 def _f(v):
@@ -300,13 +284,13 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
             st.code(f"{sk} = {sv[:25]}... ({len(sv)} chars)")
     if token_map:
         st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
-        # Show LIVE price test for symbols that HAVE tokens (open market)
+        st.code(f"SDK quotes received: {len(sdk_quotes)}")
         st.markdown("**Live quote test:**")
         tested=0
         for sym,entries in token_map.items():
             if not entries or tested>=5: continue
             fut=next((e for e in entries if e.get("type")=="FUT"), entries[0])
-            q=live_quote(fut["tok"], fut["seg"])
+            q=live_quote(fut["tok"])
             ltp=_ltp(q)
             st.code(f"{sym} {fut.get('type')} tok={fut['tok']} → LTP=₹{ltp} | raw={str(q)[:200]}")
             tested+=1
