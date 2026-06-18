@@ -296,8 +296,16 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
     if session:  st.code(f"Session keys: {list(session.keys())}")
     if token_map:
         st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
-        for sym,entries in list(token_map.items())[:2]:
-            st.code(f"{sym}: {entries[:2]}")
+        # Show LIVE price test for symbols that HAVE tokens (open market)
+        st.markdown("**Live quote test:**")
+        tested=0
+        for sym,entries in token_map.items():
+            if not entries or tested>=5: continue
+            fut=next((e for e in entries if e.get("type")=="FUT"), entries[0])
+            q=live_quote(fut["tok"], fut["seg"])
+            ltp=_ltp(q)
+            st.code(f"{sym} {fut.get('type')} tok={fut['tok']} → LTP=₹{ltp} | raw={str(q)[:200]}")
+            tested+=1
 
 st.markdown("---")
 
