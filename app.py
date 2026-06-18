@@ -293,7 +293,11 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
         if v: st.success(f"✅ {k} ({len(v)} chars)")
         else: st.error(f"❌ {k} MISSING")
     if auth_err: st.error(f"Auth: {auth_err}")
-    if session:  st.code(f"Session keys: {list(session.keys())}")
+    if session:
+        st.markdown("**Captured session fields:**")
+        for sk,sv in session.items():
+            # Mask the values but show key + length so we know what we have
+            st.code(f"{sk} = {sv[:25]}... ({len(sv)} chars)")
     if token_map:
         st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
         # Show LIVE price test for symbols that HAVE tokens (open market)
