@@ -212,8 +212,46 @@ def main():
             del raw; gc.collect()
             print(f"[auth] {symbol}: {len(entries)} tokens", file=sys.stderr, flush=True)
 
-    # Output: session headers + token map
-    result={"session":session,"token_map":token_map,"ck":ck}
+    # ── Fetch LIVE QUOTES for all tokens via SDK (this works in subprocess) ──
+    quotes={}
+    all_tokens=[]
+    # Prioritize FUT first, then options — cap at 60 to stay within timeout
+    for sym,entries in token_map.items():
+        for e in entries:
+            if e.get("tok") and e.get("type")=="FUT":
+                all_tokens.append((e["tok"], e["seg"]))
+    for sym,entries in token_map.items():
+        for e in entries:
+            if e.get("tok") and e.get("type")!="FUT":
+                all_tokens.append((e["tok"], e["seg"]))
+    all_tokens=all_tokens[:60]
+
+    # Group by segment, batch fetch
+    by_seg={}
+    for tok,seg in all_tokens:
+        by_seg.setdefault(seg,[]).append(str(tok))
+
+    for seg,toks in by_seg.items():
+        # Fetch ONE token at a time so we can reliably map response→token
+        for tk in toks:
+            inst=[{"instrument_token":tk,"exchange_segment":seg}]
+            try:
+                qr=_silent(lambda inst=inst: api.get_live_quotes(inst))
+                items=qr
+                if isinstance(qr,dict):
+                    items=qr.get("data",qr.get("result",qr.get("Data",[])))
+                if isinstance(items,dict): items=[items]
+                if isinstance(items,list) and items:
+                    q=items[0]
+                    if isinstance(q,dict):
+                        quotes[tk]=q   # key by the token WE asked for
+            except Exception as ex:
+                print(f"[quote] {tk} err: {ex}", file=sys.stderr, flush=True)
+
+    print(f"[quote] fetched {len(quotes)} quotes for {len(all_tokens)} tokens", file=sys.stderr, flush=True)
+
+    # Output: session + token map + LIVE QUOTES
+    result={"session":session,"token_map":token_map,"quotes":quotes,"ck":ck}
     print(json.dumps(result))
     sys.stdout.flush()
 
