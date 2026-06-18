@@ -74,7 +74,7 @@ STEPS = {
     "RELIANCE":50,"HDFCBANK":20,"TCS":100,"INFY":50,"ICICIBANK":20,"SBIN":10,
     "GOLDM":100,"SILVERM":1000,"CRUDEOIL":100,"NATURALGAS":10,"COPPER":5,
 }
-STRIKE_RANGE=3
+STRIKE_RANGE=2
 
 def main():
     from neo_api_client import NeoAPI
@@ -124,7 +124,17 @@ def main():
     today=datetime.datetime.now(ist).date()
     token_map={}   # symbol → [{token,seg,sym,type,strike,expiry}]
 
+    # Only scan the segment whose market is open right now (saves time)
+    import datetime as _dt, pytz as _pytz
+    _now=_dt.datetime.now(_pytz.timezone("Asia/Kolkata")); _wd=_now.weekday()
+    _nse=(_now.replace(hour=9,minute=15,second=0)<=_now<=_now.replace(hour=15,minute=30,second=0)) and _wd<5
+    _mcx=((_wd<5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=23,minute=30,second=0)) or \
+         ((_wd==5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=14,minute=0,second=0))
+
     for seg,symbols in SYMBOLS.items():
+        # Skip closed segments to avoid slow hanging quote calls
+        if seg in ("nse_fo","nse_cm") and not _nse: continue
+        if seg=="mcx_fo" and not _mcx: continue
         for symbol in symbols:
             step=STEPS.get(symbol,50)
             try:
@@ -133,7 +143,7 @@ def main():
             except: raw=[]
 
             entries=[]
-            # Nearest FUT
+            # Nearest FUT — ONE live quote to get underlying for ATM calc
             futs=sorted([
                 (ep,item) for item in raw
                 for ep in [_parse_exp(item)]
@@ -145,14 +155,10 @@ def main():
                 ep,item=futs[0]; tok=_tok(item)
                 entries.append({"tok":tok,"seg":seg,"sym":_sym(item),
                                  "type":"FUT","strike":None,"expiry":ep})
-                # Get underlying from futures LTP (we'll do this with raw HTTP later)
-                # Use strike midpoint as approximate ATM for now
-                # Actually try to get LTP from the quote
                 try:
                     qr=_silent(lambda t=tok,s=seg: api.get_live_quotes(
                         [{"instrument_token":str(t),"exchange_segment":s}]))
-                    if isinstance(qr,list) and qr:
-                        q=qr[0]
+                    if isinstance(qr,list) and qr: q=qr[0]
                     elif isinstance(qr,dict) and "data" in qr:
                         d=qr["data"]; q=d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) else {})
                     else: q={}
@@ -163,7 +169,7 @@ def main():
                             if f>0: und=f; break
                 except: pass
 
-            # Options near ATM
+            # Options near ATM — collect tokens only, NO live quotes (fast)
             if und>0:
                 atm=round(und/step)*step
                 watch={atm+i*step for i in range(-STRIKE_RANGE,STRIKE_RANGE+1)}
@@ -188,6 +194,7 @@ def main():
 
             token_map[symbol]=entries
             del raw; gc.collect()
+            print(f"[auth] {symbol}: {len(entries)} tokens", file=sys.stderr, flush=True)
 
     # Output: session headers + token map
     result={"session":session,"token_map":token_map,"ck":ck}
