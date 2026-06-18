@@ -8,9 +8,21 @@ Main process stays light (~120MB) using only requests for live quotes.
 """
 import streamlit as st
 import pandas as pd
-import os, json, re, subprocess, sys, gc, requests, pytz
+import os, json, re, subprocess, sys, gc
 from datetime import datetime
 from collections import defaultdict
+
+# Import external packages separately so a missing one is obvious
+try:
+    import requests
+except ImportError:
+    st.error("Missing package: requests — add 'requests' to requirements.txt")
+    st.stop()
+try:
+    import pytz
+except ImportError:
+    st.error("Missing package: pytz — add 'pytz' to requirements.txt")
+    st.stop()
 
 st.set_page_config(page_title="SNY Block Detector", layout="wide", page_icon="⚡")
 st.markdown("""
