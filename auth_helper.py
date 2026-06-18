@@ -201,28 +201,40 @@ def main():
                 except Exception as ex:
                     print(f"[und] {symbol} err: {ex}", file=sys.stderr, flush=True)
 
-            # Options near ATM — collect tokens only, NO live quotes (fast)
+            # Options near ATM — find REAL strikes from data (any interval)
             if und>0:
-                atm=round(und/step)*step
-                watch={atm+i*step for i in range(-STRIKE_RANGE,STRIKE_RANGE+1)}
+                # Step 1: collect all available option strikes for this symbol
+                opt_items=[]
                 for item in raw:
                     s2=_sym(item)
                     if not _matches(s2,symbol): continue
                     raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
                     opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
                     if not opt: continue
+                    sk=None
                     for k in ("pStrikePrice","strkPrc","strikePrice"):
                         v=item.get(k)
                         if v is not None:
-                            try:
-                                sk=float(v)
-                                if sk in watch:
-                                    ep=_parse_exp(item)
-                                    if ep:
-                                        entries.append({"tok":_tok(item),"seg":seg,"sym":s2,
-                                                        "type":opt,"strike":int(sk),"expiry":ep})
+                            try: sk=float(v)
                             except: pass
                             break
+                    ep=_parse_exp(item)
+                    if sk and sk>0 and ep:
+                        opt_items.append((sk,opt,ep,item))
+
+                # Step 2: find the STRIKE_RANGE strikes closest to ATM on each side
+                if opt_items:
+                    all_strikes=sorted(set(sk for sk,_,_,_ in opt_items))
+                    # nearest strike to underlying
+                    atm_strike=min(all_strikes, key=lambda x:abs(x-und))
+                    atm_idx=all_strikes.index(atm_strike)
+                    lo=max(0, atm_idx-STRIKE_RANGE)
+                    hi=min(len(all_strikes), atm_idx+STRIKE_RANGE+1)
+                    watch=set(all_strikes[lo:hi])
+                    for sk,opt,ep,item in opt_items:
+                        if sk in watch:
+                            entries.append({"tok":_tok(item),"seg":seg,"sym":_sym(item),
+                                            "type":opt,"strike":int(sk),"expiry":ep})
 
             token_map[symbol]=entries
             del raw; gc.collect()
