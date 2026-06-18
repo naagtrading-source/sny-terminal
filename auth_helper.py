@@ -22,6 +22,23 @@ def _f(v):
     try: return float(str(v).replace(",",""))
     except: return 0.0
 
+def _extract_quote(qr):
+    """Normalize whatever api.quotes() returns into a flat dict."""
+    if qr is None: return {}
+    if isinstance(qr,str): return {}
+    if isinstance(qr,list):
+        return qr[0] if qr and isinstance(qr[0],dict) else {}
+    if isinstance(qr,dict):
+        # Common wrappers: {"data":[...]}, {"data":{...}}, {"d":[...]}
+        for dk in ("data","Data","result","Result","d","quotes"):
+            if dk in qr:
+                inn=qr[dk]
+                if isinstance(inn,list) and inn:
+                    return inn[0] if isinstance(inn[0],dict) else {}
+                if isinstance(inn,dict): return inn
+        return qr
+    return {}
+
 def _sym(item):
     for k in ("pTrdSymbol","trdSym","tradingSymbol"):
         v=item.get(k)
@@ -172,18 +189,17 @@ def main():
                 entries.append({"tok":tok,"seg":seg,"sym":_sym(item),
                                  "type":"FUT","strike":None,"expiry":ep})
                 try:
-                    qr=_silent(lambda t=tok,s=seg: api.get_live_quotes(
-                        [{"instrument_token":str(t),"exchange_segment":s}]))
-                    if isinstance(qr,list) and qr: q=qr[0]
-                    elif isinstance(qr,dict) and "data" in qr:
-                        d=qr["data"]; q=d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) else {})
-                    else: q={}
+                    qr=_silent(lambda t=tok,s=seg: api.quotes(
+                        instrument_tokens=[{"instrument_token":str(t),"exchange_segment":s}],
+                        quote_type="ltp"))
+                    q=_extract_quote(qr)
                     for k in ("ltp","last_traded_price","lastPrice","LTP","c","close","price"):
                         v=q.get(k)
                         if v not in (None,"",0,"0",0.0):
                             f=_f(v)
                             if f>0: und=f; break
-                except: pass
+                except Exception as ex:
+                    print(f"[und] {symbol} err: {ex}", file=sys.stderr, flush=True)
 
             # Options near ATM — collect tokens only, NO live quotes (fast)
             if und>0:
@@ -229,19 +245,15 @@ def main():
     if _first:
         tk,sg=_first
         diag["test_token"]=f"{tk}/{sg}"
-        # Attempt 1: get_live_quotes with list
-        try:
-            r=_silent(lambda: api.get_live_quotes([{"instrument_token":str(tk),"exchange_segment":sg}]))
-            diag["get_live_quotes"]=str(r)[:400]
-        except Exception as ex:
-            diag["get_live_quotes_err"]=str(ex)[:300]
-        # Attempt 2: quotes() method if it exists
-        if hasattr(api,"quotes"):
+        # Test the correct quotes() method with different quote_types
+        for qt in ("ltp", None):
             try:
-                r=_silent(lambda: api.quotes(instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],quote_type="ltp"))
-                diag["quotes"]=str(r)[:400]
+                r=_silent(lambda qt=qt: api.quotes(
+                    instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],
+                    quote_type=qt))
+                diag[f"quotes_{qt}"]=str(r)[:400]
             except Exception as ex:
-                diag["quotes_err"]=str(ex)[:300]
+                diag[f"quotes_{qt}_err"]=str(ex)[:300]
 
     # ── Fetch LIVE QUOTES for all tokens via SDK ──────────────────────────────
     quotes={}
@@ -263,19 +275,14 @@ def main():
         by_seg.setdefault(seg,[]).append(str(tok))
 
     for seg,toks in by_seg.items():
-        # Fetch ONE token at a time so we can reliably map response→token
         for tk in toks:
-            inst=[{"instrument_token":tk,"exchange_segment":seg}]
             try:
-                qr=_silent(lambda inst=inst: api.get_live_quotes(inst))
-                items=qr
-                if isinstance(qr,dict):
-                    items=qr.get("data",qr.get("result",qr.get("Data",[])))
-                if isinstance(items,dict): items=[items]
-                if isinstance(items,list) and items:
-                    q=items[0]
-                    if isinstance(q,dict):
-                        quotes[tk]=q   # key by the token WE asked for
+                qr=_silent(lambda tk=tk,seg=seg: api.quotes(
+                    instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":seg}],
+                    quote_type=None))   # None = full quote (ltp+vol+oi+depth)
+                q=_extract_quote(qr)
+                if q:
+                    quotes[tk]=q
             except Exception as ex:
                 print(f"[quote] {tk} err: {ex}", file=sys.stderr, flush=True)
 
