@@ -1,0 +1,7 @@
+pyotp>=2.9.0
+pandas>=2.0.0
+pydantic<2.0.0
+requests>=2.31.0
+streamlit>=1.35.0
+pytz
+git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.2#egg=neo_api_client
