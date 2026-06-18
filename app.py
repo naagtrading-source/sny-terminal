@@ -124,9 +124,7 @@ def _f(v):
     except: return 0.0
 def _ltp(q):
     if not isinstance(q,dict): return 0.0
-    for k in ("last_price","ltp","last_traded_price","lastPrice","LTP","ltpc",
-              "c","close","price","Ltp","last_trade_price","lastTradedPrice",
-              "ltP","last_traded_pric"):
+    for k in ("ltp","last_price","last_traded_price","lastPrice","LTP","close"):
         v=q.get(k)
         if v not in (None,"",0,"0",0.0):
             f=_f(v)
@@ -134,8 +132,7 @@ def _ltp(q):
     return 0.0
 def _vol(q):
     if not isinstance(q,dict): return 0
-    for k in ("volume","vol","volume_traded","tradedQuantity","totalTradedVolume",
-              "Volume","vol_traded_today","ttv","total_traded_volume","v"):
+    for k in ("last_volume","volume","vol","volume_traded","totalTradedVolume"):
         v=q.get(k)
         if v not in (None,""): 
             try: return max(0,int(_f(v)))
@@ -143,7 +140,7 @@ def _vol(q):
     return 0
 def _oi(q):
     if not isinstance(q,dict): return 0
-    for k in ("open_interest","oi","openInterest","OI","OpenInterest","oiDayHigh"):
+    for k in ("open_int","open_interest","oi","openInterest","OI"):
         v=q.get(k)
         if v not in (None,""):
             try: return max(0,int(_f(v)))
@@ -158,8 +155,8 @@ def _ltq(q):
             except: pass
     return 0
 def _trend(q,opt):
-    bq=int(_f(q.get("total_buy_quantity",q.get("buyQty",0))or 0))
-    sq=int(_f(q.get("total_sell_quantity",q.get("sellQty",0))or 0))
+    bq=int(_f(q.get("total_buy",q.get("total_buy_quantity",q.get("buyQty",0)))or 0))
+    sq=int(_f(q.get("total_sell",q.get("total_sell_quantity",q.get("sellQty",0)))or 0))
     if bq>0 and sq>0:
         if bq>sq*1.2: return "🟢 BUY"
         if sq>bq*1.2: return "🔴 SELL"
