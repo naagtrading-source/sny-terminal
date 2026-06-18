@@ -124,7 +124,9 @@ def _f(v):
     except: return 0.0
 def _ltp(q):
     if not isinstance(q,dict): return 0.0
-    for k in ("ltp","last_traded_price","lastPrice","LTP","c","close","price","Ltp"):
+    for k in ("last_price","ltp","last_traded_price","lastPrice","LTP","ltpc",
+              "c","close","price","Ltp","last_trade_price","lastTradedPrice",
+              "ltP","last_traded_pric"):
         v=q.get(k)
         if v not in (None,"",0,"0",0.0):
             f=_f(v)
@@ -132,7 +134,8 @@ def _ltp(q):
     return 0.0
 def _vol(q):
     if not isinstance(q,dict): return 0
-    for k in ("volume","vol","tradedQuantity","totalTradedVolume","Volume"):
+    for k in ("volume","vol","volume_traded","tradedQuantity","totalTradedVolume",
+              "Volume","vol_traded_today","ttv","total_traded_volume","v"):
         v=q.get(k)
         if v not in (None,""): 
             try: return max(0,int(_f(v)))
@@ -140,7 +143,7 @@ def _vol(q):
     return 0
 def _oi(q):
     if not isinstance(q,dict): return 0
-    for k in ("open_interest","oi","openInterest","OI"):
+    for k in ("open_interest","oi","openInterest","OI","OpenInterest","oiDayHigh"):
         v=q.get(k)
         if v not in (None,""):
             try: return max(0,int(_f(v)))
@@ -301,58 +304,59 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
 
 st.markdown("---")
 
-# ── Run detection ──────────────────────────────────────────────────────────────
-if token_map and (nse_l or mcx_l):
-    new_blocks = detect_blocks()
-    if new_blocks:
-        for b in reversed(new_blocks):
-            st.session_state["feed"].insert(0, b)
-        st.session_state["feed"] = st.session_state["feed"][:60]
-    st.caption(f"🔄 Monitoring {sum(len(v) for v in token_map.values())} instruments | {len(st.session_state['feed'])} blocks logged")
+# ── Live data section — auto-reruns every 60s WITHOUT full page reload ─────────
+@st.fragment(run_every=65 if (nse_l or mcx_l) else None)
+def live_section():
+    # Re-fetch fresh quotes each rerun (get_auth cache TTL=60s → re-spawns subprocess)
+    global sdk_quotes, token_map
+    _sess,_tm,_q,_diag,_err = get_auth()
+    if _q: sdk_quotes = _q
+    if _tm: token_map = _tm
+    if token_map and (nse_l or mcx_l):
+        new_blocks = detect_blocks()
+        if new_blocks:
+            for b in reversed(new_blocks):
+                st.session_state["feed"].insert(0, b)
+            st.session_state["feed"] = st.session_state["feed"][:60]
+        st.caption(f"🔄 Monitoring {sum(len(v) for v in token_map.values())} instruments | "
+                   f"{len(st.session_state['feed'])} blocks logged | "
+                   f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
-# ── Live feed ──────────────────────────────────────────────────────────────────
-st.markdown("### 📡 Live Block Feed")
-feed=st.session_state["feed"]
-if not feed:
-    if not (nse_l or mcx_l):
-        st.info("🌙 Markets closed. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
-    elif not token_map:
-        st.warning("⏳ Auth in progress — will start scanning once connected.")
+    st.markdown("### 📡 Live Block Feed")
+    feed=st.session_state["feed"]
+    if not feed:
+        if not (nse_l or mcx_l):
+            st.info("🌙 Markets closed. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
+        elif not token_map:
+            st.warning("⏳ Auth in progress — will start scanning once connected.")
+        else:
+            st.caption("⏳ Monitoring... blocks appear here as they trigger.")
     else:
-        st.caption("⏳ Monitoring... blocks appear here as they trigger.")
-else:
-    for b in feed[:25]:
-        icon="🔵" if b["type"]=="CE" else "🔴" if b["type"]=="PE" else "🟡"
-        line=(f"`{b['time']}` {icon} **{b['symbol']} {b['strike']} {b['type']}**"
-              f" [{b['expiry']}] | LTP ₹{b['ltp']} | **{b['reasons']}** | {b['trend']}")
-        val=b.get("value_cr",0)
-        if val>=2.0:   st.error(line)
-        elif val>=0.5: st.warning(line)
-        else:          st.info(line)
+        for b in feed[:25]:
+            icon="🔵" if b["type"]=="CE" else "🔴" if b["type"]=="PE" else "🟡"
+            line=(f"`{b['time']}` {icon} **{b['symbol']} {b['strike']} {b['type']}**"
+                  f" [{b['expiry']}] | LTP ₹{b['ltp']} | **{b['reasons']}** | {b['trend']}")
+            val=b.get("value_cr",0)
+            if val>=2.0:   st.error(line)
+            elif val>=0.5: st.warning(line)
+            else:          st.info(line)
 
-st.markdown("---")
+    st.markdown("---")
+    t1,t2,t3=st.tabs(["📈 Index Blocks","📊 Stock Blocks","🛢️ Commodity Blocks"])
+    def tbl(cat):
+        rows=[b for b in feed if b["category"]==cat]
+        if not rows: st.caption(f"No {cat.lower()} blocks detected yet."); return
+        st.dataframe(pd.DataFrame([{
+            "Time":b["time"],"Symbol":b["symbol"],"Strike":b["strike"],
+            "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']}",
+            "Vol Jump":f"{b['vol_jump']:,}","Total Vol":f"{b['total_vol']:,}",
+            "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
+            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
+            "Signals":b["reasons"],
+        } for b in rows]),use_container_width=True,hide_index=True)
+    with t1: tbl("Index")
+    with t2: tbl("Stock")
+    with t3: tbl("Commodity")
 
-# ── Summary tables ─────────────────────────────────────────────────────────────
-t1,t2,t3=st.tabs(["📈 Index Blocks","📊 Stock Blocks","🛢️ Commodity Blocks"])
-def tbl(cat):
-    rows=[b for b in feed if b["category"]==cat]
-    if not rows: st.caption(f"No {cat.lower()} blocks detected yet."); return
-    st.dataframe(pd.DataFrame([{
-        "Time":b["time"],"Symbol":b["symbol"],"Strike":b["strike"],
-        "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']}",
-        "Vol Jump":f"{b['vol_jump']:,}","Total Vol":f"{b['total_vol']:,}",
-        "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
-        "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
-        "Signals":b["reasons"],
-    } for b in rows]),use_container_width=True,hide_index=True)
-with t1: tbl("Index")
-with t2: tbl("Stock")
-with t3: tbl("Commodity")
-
-# Auto-refresh: meta tag reloads page periodically.
-# (Streamlit fragments would be smoother but require the quote source working first.)
-secs=60 if (nse_l or mcx_l) else 300
-st.markdown(
-    f'<meta http-equiv="refresh" content="{secs}">',
-    unsafe_allow_html=True)
-st.caption(f"⏱️ Auto-refreshes every {secs}s")
+live_section()
+st.caption("⏱️ Live section auto-updates every 60s (no full page reload)")
