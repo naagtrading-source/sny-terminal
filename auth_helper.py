@@ -193,7 +193,8 @@ def main():
                         instrument_tokens=[{"instrument_token":str(t),"exchange_segment":s}],
                         quote_type="ltp"))
                     q=_extract_quote(qr)
-                    for k in ("ltp","last_traded_price","lastPrice","LTP","c","close","price"):
+                    for k in ("last_price","ltp","last_traded_price","lastPrice","LTP",
+                              "c","close","price","ltpc","lastTradedPrice"):
                         v=q.get(k)
                         if v not in (None,"",0,"0",0.0):
                             f=_f(v)
@@ -245,15 +246,16 @@ def main():
     if _first:
         tk,sg=_first
         diag["test_token"]=f"{tk}/{sg}"
-        # Test the correct quotes() method with different quote_types
-        for qt in ("ltp", None):
-            try:
-                r=_silent(lambda qt=qt: api.quotes(
-                    instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],
-                    quote_type=qt))
-                diag[f"quotes_{qt}"]=str(r)[:400]
-            except Exception as ex:
-                diag[f"quotes_{qt}_err"]=str(ex)[:300]
+        # Show FULL quote so we can see every field name (esp. the LTP field)
+        try:
+            r=_silent(lambda: api.quotes(
+                instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],
+                quote_type=None))
+            q=_extract_quote(r)
+            diag["quote_keys"]=str(list(q.keys()))
+            diag["quote_full"]=str(q)[:800]
+        except Exception as ex:
+            diag["quote_err"]=str(ex)[:300]
 
     # ── Fetch LIVE QUOTES for all tokens via SDK ──────────────────────────────
     quotes={}
