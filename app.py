@@ -70,7 +70,7 @@ def get_auth():
         proc = subprocess.run(
             [sys.executable, "auth_helper.py"],
             capture_output=True, text=True,
-            timeout=90, env=env,
+            timeout=240, env=env,
         )
         if proc.returncode != 0:
             return None, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
@@ -88,7 +88,7 @@ def get_auth():
         except: pass
         return data.get("session",{}), data.get("token_map",{}), None
     except subprocess.TimeoutExpired:
-        return None, {}, "auth_helper timed out after 90s"
+        return None, {}, "auth_helper timed out after 240s"
     except Exception as e:
         return None, {}, str(e)
 
