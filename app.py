@@ -73,25 +73,25 @@ def get_auth():
             timeout=240, env=env,
         )
         if proc.returncode != 0:
-            return None, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
+            return None, {}, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
         stdout = proc.stdout.strip()
         if not stdout:
-            return None, {}, {}, f"auth_helper no output. stderr: {proc.stderr[-300:]}"
+            return None, {}, {}, {}, f"auth_helper no output. stderr: {proc.stderr[-300:]}"
         data = json.loads(stdout)
         if "error" in data:
-            return None, {}, {}, f"auth error: {data['error']}"
+            return None, {}, {}, {}, f"auth error: {data['error']}"
         gc.collect()
         try:
             import ctypes
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except: pass
-        return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), None
+        return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), data.get("diag",{}), None
     except subprocess.TimeoutExpired:
-        return None, {}, {}, "auth_helper timed out after 240s"
+        return None, {}, {}, {}, "auth_helper timed out after 240s"
     except Exception as e:
-        return None, {}, {}, str(e)
+        return None, {}, {}, {}, str(e)
 
-session, token_map, sdk_quotes, auth_err = get_auth()
+session, token_map, sdk_quotes, sdk_diag, auth_err = get_auth()
 
 # ── Build session headers from whatever the subprocess found ───────────────────
 def build_headers(session, ck):
@@ -285,6 +285,10 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
     if token_map:
         st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
         st.code(f"SDK quotes received: {len(sdk_quotes)}")
+        if sdk_diag:
+            st.markdown("**Quote API diagnostic:**")
+            for dk,dv in sdk_diag.items():
+                st.code(f"{dk}: {dv}")
         st.markdown("**Live quote test:**")
         tested=0
         for sym,entries in token_map.items():
@@ -345,7 +349,10 @@ with t1: tbl("Index")
 with t2: tbl("Stock")
 with t3: tbl("Commodity")
 
-secs=15 if (nse_l or mcx_l) else 300
+# Auto-refresh: meta tag reloads page periodically.
+# (Streamlit fragments would be smoother but require the quote source working first.)
+secs=60 if (nse_l or mcx_l) else 300
 st.markdown(
     f'<meta http-equiv="refresh" content="{secs}">',
     unsafe_allow_html=True)
+st.caption(f"⏱️ Auto-refreshes every {secs}s")
