@@ -349,7 +349,7 @@ with t1: tbl("Index")
 with t2: tbl("Stock")
 with t3: tbl("Commodity")
 
-ms=15000 if (nse_l or mcx_l) else 300000
-st.components.v1.html(
-    f"<script>setTimeout(function(){{window.location.reload();}},{ms});</script>",
-    height=0,width=0)
+secs=15 if (nse_l or mcx_l) else 300
+st.markdown(
+    f'<meta http-equiv="refresh" content="{secs}">',
+    unsafe_allow_html=True)
