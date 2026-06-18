@@ -101,22 +101,38 @@ def main():
         print(json.dumps({"error":"login_failed"})); sys.exit(1)
     _silent(lambda: api.totp_validate(mpin=mpin))
 
-    # Extract session headers from api object
+    # Extract session headers — capture EVERYTHING that could be auth-related
     session = {}
-    for attr in dir(api):
-        if any(x in attr.lower() for x in ("auth","token","sid","access")):
+    def _grab(obj, prefix=""):
+        for attr in dir(obj):
+            if attr.startswith("__"): continue
             try:
-                v=getattr(api,attr)
-                if v and not callable(v) and 5<len(str(v))<500:
-                    session[attr]=str(v)
+                v=getattr(obj,attr)
+                if callable(v): continue
+                sv=str(v)
+                if 3<len(sv)<800 and any(x in attr.lower() for x in
+                    ("auth","token","sid","access","key","session","bearer","header","hsserverid","serverid")):
+                    session[f"{prefix}{attr}"]=sv
             except: pass
+    _grab(api)
+    for sub in ("configuration","session","api_client"):
+        try: _grab(getattr(api,sub), f"{sub}_")
+        except: pass
+
+    # CRITICAL: capture the SDK's actual request headers by inspecting
+    # the api_client.default_headers or similar
     try:
-        cfg=api.configuration
-        for attr in ("auth","token","access_token","sid","server_id","Authorization"):
-            try:
-                v=getattr(cfg,attr,None)
-                if v and 5<len(str(v))<500: session[f"cfg_{attr}"]=str(v)
-            except: pass
+        ac=api.api_client
+        if hasattr(ac,"default_headers"):
+            for hk,hv in dict(ac.default_headers).items():
+                session[f"hdr_{hk}"]=str(hv)
+    except: pass
+    try:
+        if hasattr(api,"configuration"):
+            cfg=api.configuration
+            if hasattr(cfg,"api_key") and isinstance(cfg.api_key,dict):
+                for kk,kv in cfg.api_key.items():
+                    session[f"apikey_{kk}"]=str(kv)
     except: pass
 
     # Collect minimal tokens: nearest FUT + ATM±STRIKE_RANGE options per symbol
