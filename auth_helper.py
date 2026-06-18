@@ -212,7 +212,38 @@ def main():
             del raw; gc.collect()
             print(f"[auth] {symbol}: {len(entries)} tokens", file=sys.stderr, flush=True)
 
-    # ── Fetch LIVE QUOTES for all tokens via SDK (this works in subprocess) ──
+    # ── DIAGNOSTIC: capture exactly what the quote API returns ────────────────
+    diag={}
+    try:
+        diag["methods"]=[m for m in dir(api) if not m.startswith("_") and
+                         any(x in m.lower() for x in ("quote","ltp","market","depth","subscribe","feed"))]
+    except Exception as ex: diag["methods_err"]=str(ex)
+
+    # Try get_live_quotes on the first available token, capture raw + error
+    _first=None
+    for sym,entries in token_map.items():
+        for e in entries:
+            if e.get("tok"): _first=(e["tok"],e["seg"]); break
+        if _first: break
+
+    if _first:
+        tk,sg=_first
+        diag["test_token"]=f"{tk}/{sg}"
+        # Attempt 1: get_live_quotes with list
+        try:
+            r=_silent(lambda: api.get_live_quotes([{"instrument_token":str(tk),"exchange_segment":sg}]))
+            diag["get_live_quotes"]=str(r)[:400]
+        except Exception as ex:
+            diag["get_live_quotes_err"]=str(ex)[:300]
+        # Attempt 2: quotes() method if it exists
+        if hasattr(api,"quotes"):
+            try:
+                r=_silent(lambda: api.quotes(instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],quote_type="ltp"))
+                diag["quotes"]=str(r)[:400]
+            except Exception as ex:
+                diag["quotes_err"]=str(ex)[:300]
+
+    # ── Fetch LIVE QUOTES for all tokens via SDK ──────────────────────────────
     quotes={}
     all_tokens=[]
     # Prioritize FUT first, then options — cap at 60 to stay within timeout
@@ -251,7 +282,7 @@ def main():
     print(f"[quote] fetched {len(quotes)} quotes for {len(all_tokens)} tokens", file=sys.stderr, flush=True)
 
     # Output: session + token map + LIVE QUOTES
-    result={"session":session,"token_map":token_map,"quotes":quotes,"ck":ck}
+    result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"ck":ck}
     print(json.dumps(result))
     sys.stdout.flush()
 
