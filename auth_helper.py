@@ -193,10 +193,9 @@ def main():
                         instrument_tokens=[{"instrument_token":str(t),"exchange_segment":s}],
                         quote_type="ltp"))
                     q=_extract_quote(qr)
-                    for k in ("last_price","ltp","last_traded_price","lastPrice","LTP",
-                              "c","close","price","ltpc","lastTradedPrice"):
+                    for k in ("ltp","last_price","last_traded_price","close"):
                         v=q.get(k)
-                        if v not in (None,"",0,"0",0.0):
+                        if v not in (None,"",0,"0",0.0,"0.0000"):
                             f=_f(v)
                             if f>0: und=f; break
                 except Exception as ex:
