@@ -71,7 +71,7 @@ def get_auth():
         proc = subprocess.run(
             [sys.executable, "auth_helper.py"],
             capture_output=True, text=True,
-            timeout=240, env=env,
+            timeout=120, env=env,
         )
         if proc.returncode != 0:
             return None, {}, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
@@ -89,7 +89,7 @@ def get_auth():
         st.session_state["_opt_debug"]=data.get("opt_debug",{})
         return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), data.get("diag",{}), None
     except subprocess.TimeoutExpired:
-        return None, {}, {}, {}, "auth_helper timed out after 240s"
+        return None, {}, {}, {}, "auth_helper timed out after 120s — will retry"
     except Exception as e:
         return None, {}, {}, {}, str(e)
 
@@ -355,12 +355,16 @@ with st.expander("🔧 Diagnostic", expanded=False):
 st.markdown("---")
 
 # ── Live data section — auto-reruns every 60s WITHOUT full page reload ─────────
-@st.fragment(run_every=30 if (nse_l or mcx_l) else None)
+@st.fragment(run_every=90 if (nse_l or mcx_l) else None)
 def live_section():
-    # Fetch FRESH quotes only (fast, no re-login) using the lightweight quote helper
-    global sdk_quotes
-    fresh = fetch_quotes_fast()
-    if fresh: sdk_quotes = fresh
+    # Re-read cached auth (re-spawns auth_helper only when 20-min cache expires).
+    # Within cache window this is instant. Quotes refresh when cache renews.
+    global sdk_quotes, token_map
+    try:
+        _s,_tm,_q,_d,_e = get_auth()
+        if _q: sdk_quotes = _q
+        if _tm: token_map = _tm
+    except: pass
     if token_map and (nse_l or mcx_l):
         new_blocks = detect_blocks()
         if new_blocks:
