@@ -197,6 +197,16 @@ def main():
             exps=sorted(set(ep for item in raw for ep in [_parse_exp(item)] if ep))
             keep_exps=set(exps[:NEAR_EXPIRIES])
 
+            # DIAGNOSTIC: log why options get rejected — sample first few non-FUT items
+            _dbg_opt=0
+            for item in raw:
+                s_dbg=_sym(item)
+                if "FUT" not in s_dbg and _dbg_opt<2:
+                    _dbg_opt+=1
+                    print(f"[opt-sample] {symbol}: sym={s_dbg!r} keys={list(item.keys())[:12]} "
+                          f"matches={_matches(s_dbg,symbol)} exp={_parse_exp(item)}",
+                          file=sys.stderr, flush=True)
+
             for item in raw:
                 if not _matches(_sym(item),symbol): continue
                 ep=_parse_exp(item)
