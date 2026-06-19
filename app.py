@@ -71,7 +71,7 @@ def get_auth():
         proc = subprocess.run(
             [sys.executable, "auth_helper.py"],
             capture_output=True, text=True,
-            timeout=120, env=env,
+            timeout=180, env=env,
         )
         if proc.returncode != 0:
             return None, {}, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
@@ -89,7 +89,7 @@ def get_auth():
         st.session_state["_opt_debug"]=data.get("opt_debug",{})
         return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), data.get("diag",{}), None
     except subprocess.TimeoutExpired:
-        return None, {}, {}, {}, "auth_helper timed out after 120s — will retry"
+        return None, {}, {}, {}, "auth_helper timed out after 180s — too many symbols, will retry"
     except Exception as e:
         return None, {}, {}, {}, str(e)
 
