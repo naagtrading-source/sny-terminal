@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v14-symlog"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v15-optdebug"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
