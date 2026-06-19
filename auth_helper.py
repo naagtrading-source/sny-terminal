@@ -118,32 +118,7 @@ def main():
         print(json.dumps({"error":"login_failed"})); sys.exit(1)
     _silent(lambda: api.totp_validate(mpin=mpin))
 
-    # Save session to /tmp so quote_helper can reuse it WITHOUT re-login.
-    # Try pickling the whole api; if that fails, save credential fields only.
-    try:
-        import pickle
-        with open("/tmp/kotak_api.pkl","wb") as sf:
-            pickle.dump(api, sf)
-        print("[session] saved full api", file=sys.stderr, flush=True)
-    except Exception as ex:
-        print(f"[session] full pickle failed ({ex}), saving creds only", file=sys.stderr, flush=True)
-        # Fallback: save consumer key + config so quote_helper can rebuild
-        try:
-            creds={"ck":ck,"config":{}}
-            cfg=getattr(api,"configuration",None)
-            if cfg:
-                for a in dir(cfg):
-                    if a.startswith("_"): continue
-                    try:
-                        v=getattr(cfg,a)
-                        if not callable(v) and isinstance(v,(str,int,float,bool,dict,list,type(None))):
-                            creds["config"][a]=v
-                    except: pass
-            with open("/tmp/kotak_creds.json","w") as cf:
-                json.dump(creds, cf)
-            print("[session] saved creds fallback", file=sys.stderr, flush=True)
-        except Exception as ex2:
-            print(f"[session] creds save failed: {ex2}", file=sys.stderr, flush=True)
+    # (session-save removed — was causing hangs)
 
     # Extract session headers — capture EVERYTHING that could be auth-related
     session = {}
