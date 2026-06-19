@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v11-accdist"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v12-showall"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
@@ -393,7 +393,8 @@ def detect_blocks():
 
             # Show every contract that has real volume (it's a LIST).
             # Skip only dead/no-volume contracts.
-            if vol >= MIN_VOL_JUMP or is_unusual:
+            # Show any contract that has ANY volume (it's a live list).
+            if vol > 0 or is_unusual:
                 new.append({
                     "time":ts,"category":cat,"symbol":symbol,
                     "strike":str(sk) if sk else "FUT","type":kind,
@@ -557,7 +558,13 @@ def live_section():
 
     def _cat_table(rows):
         if not rows:
-            st.caption("No data yet."); return
+            if not token_map:
+                st.warning("⏳ No contracts loaded yet — auth still connecting or market closed.")
+            elif not _STORE.get("snapshot"):
+                st.caption("⏳ Waiting for first volume snapshot...")
+            else:
+                st.caption("No contracts with volume in this category right now.")
+            return
         st.dataframe(pd.DataFrame([{
             "":("🔥" if b.get("is_unusual") else ""),
             "Contract":(f"{b['symbol']} FUT" if b['type']=="FUT"
