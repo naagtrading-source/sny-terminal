@@ -85,6 +85,7 @@ def get_auth():
             import ctypes
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except: pass
+        st.session_state["_opt_debug"]=data.get("opt_debug",{})
         return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), data.get("diag",{}), None
     except subprocess.TimeoutExpired:
         return None, {}, {}, {}, "auth_helper timed out after 240s"
@@ -164,9 +165,16 @@ def _trend(q,opt):
     return "🟢 BULL" if opt=="CE" else "🔴 BEAR"
 
 # ── Volume history & prev state ────────────────────────────────────────────────
-if "prev"    not in st.session_state: st.session_state["prev"]    = defaultdict(dict)
-if "volhist" not in st.session_state: st.session_state["volhist"] = defaultdict(list)
-if "feed"    not in st.session_state: st.session_state["feed"]    = []
+# Persistent store — survives page reloads (cache_resource is shared/persistent)
+@st.cache_resource
+def _persistent_store():
+    return {"prev": defaultdict(dict), "volhist": defaultdict(list), "feed": []}
+
+_STORE = _persistent_store()
+# Mirror into session_state keys for compatibility with existing code
+st.session_state["prev"]    = _STORE["prev"]
+st.session_state["volhist"] = _STORE["volhist"]
+st.session_state["feed"]    = _STORE["feed"]
 
 def vh_avg(key):
     h=st.session_state["volhist"].get(key,[])
@@ -284,11 +292,20 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
             st.code(f"{sk} = {sv[:25]}... ({len(sv)} chars)")
     if token_map:
         st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
+        for sym,entries in token_map.items():
+            futs=sum(1 for e in entries if e.get("type")=="FUT")
+            opts=sum(1 for e in entries if e.get("type") in ("CE","PE"))
+            st.code(f"  {sym}: {futs} FUT + {opts} options = {len(entries)}")
         st.code(f"SDK quotes received: {len(sdk_quotes)}")
         if sdk_diag:
             st.markdown("**Quote API diagnostic:**")
             for dk,dv in sdk_diag.items():
                 st.code(f"{dk}: {dv}")
+        od=st.session_state.get("_opt_debug",{})
+        if od:
+            st.markdown("**Option discovery debug:**")
+            for sym,dbg in od.items():
+                st.code(f"{sym}: {dbg}")
         st.markdown("**Live quote test:**")
         tested=0
         for sym,entries in token_map.items():
@@ -313,14 +330,15 @@ def live_section():
         new_blocks = detect_blocks()
         if new_blocks:
             for b in reversed(new_blocks):
-                st.session_state["feed"].insert(0, b)
-            st.session_state["feed"] = st.session_state["feed"][:60]
+                _STORE["feed"].insert(0, b)
+            # Trim in-place to preserve the persistent reference
+            del _STORE["feed"][60:]
         st.caption(f"🔄 Monitoring {sum(len(v) for v in token_map.values())} instruments | "
                    f"{len(st.session_state['feed'])} blocks logged | "
                    f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
     st.markdown("### 📡 Live Block Feed")
-    feed=st.session_state["feed"]
+    feed=_STORE["feed"]
     if not feed:
         if not (nse_l or mcx_l):
             st.info("🌙 Markets closed. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
