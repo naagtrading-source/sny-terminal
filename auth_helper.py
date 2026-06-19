@@ -226,11 +226,17 @@ def main():
     quotes={}
     token_map={}   # category → top contracts (with quotes attached via quotes dict)
 
+    import time as _time
+    scan_start=_time.time()
+    SCAN_BUDGET=120   # seconds max for the whole volume-ranking pass
+
     for cat,conts in candidates.items():
         print(f"[scan] {cat}: {len(conts)} candidate contracts", file=sys.stderr, flush=True)
         vols=[]   # (volume, contract, quote)
-        # Fetch quote for each candidate (batched one-by-one; background thread has time)
         for c in conts:
+            if _time.time()-scan_start > SCAN_BUDGET:
+                print(f"[scan] {cat}: time budget hit, ranking {len(vols)} so far", file=sys.stderr, flush=True)
+                break
             try:
                 qr=_silent(lambda c=c: api.quotes(
                     instrument_tokens=[{"instrument_token":str(c["tok"]),"exchange_segment":c["seg"]}],
@@ -241,15 +247,20 @@ def main():
                     vols.append((v,c,q))
             except Exception as ex:
                 pass
-        # Rank by volume, keep TOP_N
+        # Rank by volume — keep top FUTs AND top options separately
+        # (so high-volume FUTs don't crowd out the option strikes you want)
         vols.sort(key=lambda x:x[0], reverse=True)
-        top=vols[:TOP_N]
+        futs = [(v,c,q) for v,c,q in vols if c["type"]=="FUT"][:6]
+        opts = [(v,c,q) for v,c,q in vols if c["type"] in ("CE","PE")][:TOP_N]
+        top = futs + opts
         entries=[]
         for v,c,q in top:
             quotes[str(c["tok"])]=q
             entries.append(c)
         token_map[cat]=entries
-        print(f"[scan] {cat}: kept top {len(entries)} by volume (max vol={top[0][0] if top else 0})",
+        n_fut=sum(1 for e in entries if e["type"]=="FUT")
+        n_opt=len(entries)-n_fut
+        print(f"[scan] {cat}: kept {n_fut} FUT + {n_opt} options by volume",
               file=sys.stderr, flush=True)
 
     # ── Diagnostic: capture one full quote for field reference ────────────────
