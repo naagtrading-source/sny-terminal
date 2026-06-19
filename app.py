@@ -316,42 +316,41 @@ with c2: st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
 with c3: st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
 with c4: st.metric("IST",now.strftime("%H:%M:%S"))
 
-with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
-    for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
-        v=os.environ.get(k)
-        if v: st.success(f"✅ {k} ({len(v)} chars)")
-        else: st.error(f"❌ {k} MISSING")
-    if auth_err: st.error(f"Auth: {auth_err}")
-    if session:
-        st.markdown("**Captured session fields:**")
-        for sk,sv in session.items():
-            # Mask the values but show key + length so we know what we have
-            st.code(f"{sk} = {sv[:25]}... ({len(sv)} chars)")
-    if token_map:
-        st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
-        for sym,entries in token_map.items():
-            futs=sum(1 for e in entries if e.get("type")=="FUT")
-            opts=sum(1 for e in entries if e.get("type") in ("CE","PE"))
-            st.code(f"  {sym}: {futs} FUT + {opts} options = {len(entries)}")
-        st.code(f"SDK quotes received: {len(sdk_quotes)}")
-        if sdk_diag:
-            st.markdown("**Quote API diagnostic:**")
-            for dk,dv in sdk_diag.items():
-                st.code(f"{dk}: {dv}")
-        od=st.session_state.get("_opt_debug",{})
-        if od:
-            st.markdown("**Option discovery debug:**")
-            for sym,dbg in od.items():
-                st.code(f"{sym}: {dbg}")
-        st.markdown("**Live quote test:**")
-        tested=0
-        for sym,entries in token_map.items():
-            if not entries or tested>=5: continue
-            fut=next((e for e in entries if e.get("type")=="FUT"), entries[0])
-            q=live_quote(fut["tok"])
-            ltp=_ltp(q)
-            st.code(f"{sym} {fut.get('type')} tok={fut['tok']} → LTP=₹{ltp} | raw={str(q)[:200]}")
-            tested+=1
+with st.expander("🔧 Diagnostic", expanded=False):
+    # Diagnostic is gated — only the owner (who knows the PIN) can view details.
+    # This prevents public users from seeing credential lengths/session fields.
+    diag_pin = os.environ.get("DIAG_PIN", "")
+    entered = st.text_input("Enter diagnostic PIN to view", type="password", key="diagpin")
+    if diag_pin and entered == diag_pin:
+        for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
+            v=os.environ.get(k)
+            if v: st.success(f"✅ {k} present")
+            else: st.error(f"❌ {k} MISSING")
+        if auth_err: st.error(f"Auth: {auth_err}")
+        if token_map:
+            st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
+            for sym,entries in token_map.items():
+                futs=sum(1 for e in entries if e.get("type")=="FUT")
+                opts=sum(1 for e in entries if e.get("type") in ("CE","PE"))
+                st.code(f"  {sym}: {futs} FUT + {opts} options = {len(entries)}")
+            st.code(f"SDK quotes received: {len(sdk_quotes)}")
+            st.markdown("**Live quote test:**")
+            tested=0
+            for sym,entries in token_map.items():
+                if not entries or tested>=5: continue
+                fut=next((e for e in entries if e.get("type")=="FUT"), entries[0])
+                q=live_quote(fut["tok"])
+                ltp=_ltp(q)
+                st.code(f"{sym} → LTP=₹{ltp}")
+                tested+=1
+    elif not diag_pin:
+        # No PIN configured — show minimal status only (safe for public)
+        if auth_err:
+            st.error("⚠️ Connection issue. (Set DIAG_PIN in secrets to see details.)")
+        else:
+            st.caption("✅ Connected. Set a DIAG_PIN secret to enable detailed diagnostics.")
+    else:
+        st.caption("🔒 Enter PIN to view diagnostics.")
 
 st.markdown("---")
 
