@@ -50,11 +50,47 @@ LOTS = {
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
-# Higher thresholds = only TRULY unusual institutional blocks
-VOL_SPIKE_MULT = 3.5       # jump must be > 3.5x recent average
-MIN_VOL_JUMP   = 25000     # ignore jumps under 25k contracts
-LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
-OI_CHANGE_PCT  = 10.0      # OI change > 10% = real position buildup
+# Thresholds — only UNUSUAL activity (not regular liquidity)
+VOL_SPIKE_MULT = 3.0       # volume jump must be > 3x this contract's own average
+MIN_VOL_JUMP   = 10000     # ignore jumps under 10k contracts
+LARGE_VALUE_CR = 2.0       # value of jump must exceed Rs 2 crore
+OI_CHANGE_PCT  = 8.0       # OI change > 8% = real new positions
+BIG_TRADE_LOTS = 50        # single trade >= 50 lots = block print
+
+def interpret_activity(opt_type, oi_change, price_change):
+    """
+    Decode institutional intent from OI + price direction.
+    Returns (label, emoji, bias) describing what smart money is doing.
+    For options:
+      OI↑ Price↑ = fresh buying (conviction)
+      OI↑ Price↓ = fresh writing (selling premium / capping)
+      OI↓ Price↑ = short covering
+      OI↓ Price↓ = long unwinding
+    """
+    if opt_type == "CE":
+        if oi_change > 0 and price_change > 0:
+            return ("CALL BUYING", "🟢📈", "BULLISH")      # bullish bet
+        if oi_change > 0 and price_change < 0:
+            return ("CALL WRITING", "🔴✍️", "BEARISH")     # resistance/capping
+        if oi_change < 0 and price_change > 0:
+            return ("CALL SHORT COVER", "🟡", "BULLISH")
+        if oi_change < 0 and price_change < 0:
+            return ("CALL LONG UNWIND", "🟠", "BEARISH")
+    elif opt_type == "PE":
+        if oi_change > 0 and price_change > 0:
+            return ("PUT BUYING", "🔴📉", "BEARISH")       # bearish bet
+        if oi_change > 0 and price_change < 0:
+            return ("PUT WRITING", "🟢✍️", "BULLISH")      # support
+        if oi_change < 0 and price_change > 0:
+            return ("PUT SHORT COVER", "🟡", "BEARISH")
+        if oi_change < 0 and price_change < 0:
+            return ("PUT LONG UNWIND", "🟠", "BULLISH")
+    else:  # FUT
+        if oi_change > 0 and price_change > 0: return ("LONG BUILDUP", "🟢📈", "BULLISH")
+        if oi_change > 0 and price_change < 0: return ("SHORT BUILDUP", "🔴📉", "BEARISH")
+        if oi_change < 0 and price_change > 0: return ("SHORT COVERING", "🟡", "BULLISH")
+        if oi_change < 0 and price_change < 0: return ("LONG UNWINDING", "🟠", "BEARISH")
+    return ("NEUTRAL", "⚪", "NEUTRAL")
 
 # ── AUTH via subprocess — SDK loads/runs/exits, freeing its memory ─────────────
 # Background auth: run subprocess in a thread so the main script never blocks
@@ -86,8 +122,10 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
+CONFIG_VERSION = "v8-volume-ranked"  # bump to force cache refresh on config change
+
 @st.cache_resource(ttl=1200, show_spinner=False)
-def get_auth():
+def get_auth(_version=CONFIG_VERSION):
     """Non-blocking auth via background thread. Returns immediately."""
     import threading
     holder=_auth_holder()
@@ -260,81 +298,79 @@ def vh_avg(key):
     h=st.session_state["volhist"].get(key,[])
     return sum(h[:-1])/len(h[:-1]) if len(h)>=3 else 0
 
-# ── BLOCK DETECTION ───────────────────────────────────────────────────────────
+# ── INSTITUTIONAL ACTIVITY DETECTION ──────────────────────────────────────────
 def detect_blocks():
     ts  = datetime.now(IST).strftime("%H:%M:%S")
     new = []
-    for cat, symbols in CATEGORIES.items():
-        for symbol in symbols:
-            lot   = LOTS.get(symbol, 100)
-            items = token_map.get(symbol, [])
-            if not items: continue
+    for cat, entries in token_map.items():
+        for entry in entries:
+            tok  = entry.get("tok")
+            if not tok: continue
+            seg  = entry["seg"]; kind = entry["type"]
+            sk   = entry.get("strike"); exp = entry.get("expiry","")
+            sym  = entry.get("sym",""); symbol = entry.get("symbol", sym)
+            lot  = LOTS.get(symbol, 100)
 
-            # Get underlying from FUT entry
-            und = 0.0
-            for entry in items:
-                if entry.get("type") == "FUT":
-                    q = live_quote(entry["tok"], entry["seg"])
-                    und = _ltp(q)
-                    if und > 0: break
+            q   = live_quote(tok, seg)
+            ltp = _ltp(q); vol = _vol(q); oi = _oi(q); ltq = _ltq(q)
+            if vol <= 0 and ltp <= 0: continue
 
-            if und <= 0: continue
+            ikey = f"{symbol}|{kind}|{sk}|{exp}"
+            h = st.session_state["volhist"][ikey]
+            h.append(vol)
+            if len(h) > 15: h.pop(0)
 
-            for entry in items:
-                tok = entry.get("tok")
-                if not tok: continue
-                seg  = entry["seg"]
-                kind = entry["type"]
-                sk   = entry.get("strike")
-                exp  = entry.get("expiry","")
-                sym  = entry.get("sym","")
+            prev      = st.session_state["prev"].get(ikey, {})
+            prev_vol  = prev.get("vol", vol)
+            prev_oi   = prev.get("oi",  oi)
+            prev_ltp  = prev.get("ltp", ltp)
+            vol_jump  = vol - prev_vol
+            avg       = vh_avg(ikey)
+            oi_chg    = oi  - prev_oi
+            oi_pct    = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
+            price_chg = ltp - prev_ltp
 
-                q   = live_quote(tok, seg)
-                ltp = _ltp(q); vol = _vol(q); oi = _oi(q); ltq = _ltq(q)
-                if vol <= 0 and ltp <= 0: continue
+            # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
+            is_unusual = False; reasons = []
 
-                ikey = f"{symbol}|{kind}|{sk}|{exp}"
+            # 1. Volume spike vs its OWN recent average (not just high volume)
+            if avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
+                is_unusual = True
+                reasons.append(f"Vol {vol_jump/avg:.1f}× normal")
 
-                # Update history
-                h = st.session_state["volhist"][ikey]
-                h.append(vol)
-                if len(h) > 15: h.pop(0)
+            # 2. Large OI jump = fresh institutional positions
+            if abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
+                is_unusual = True
+                reasons.append(f"OI {oi_pct:+.0f}%")
 
-                prev     = st.session_state["prev"].get(ikey, {})
-                prev_vol = prev.get("vol", vol)
-                prev_oi  = prev.get("oi",  oi)
-                vol_jump = vol - prev_vol
-                avg      = vh_avg(ikey)
-                oi_chg   = oi  - prev_oi
-                oi_pct   = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
+            # 3. Big single trade (block print)
+            if ltq >= lot * BIG_TRADE_LOTS and ltq > 0:
+                is_unusual = True
+                reasons.append(f"Block {ltq:,}")
 
-                is_block = False; reasons = []
-                if avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
-                    is_block = True
-                    reasons.append(f"Vol+{vol_jump:,} ({vol_jump/avg:.1f}×avg)")
-                value_cr = (vol_jump * ltp) / 1e7
-                if value_cr >= LARGE_VALUE_CR and vol_jump >= MIN_VOL_JUMP:
-                    is_block = True; reasons.append(f"₹{value_cr:.2f}Cr")
-                if ltq >= lot * 50 and ltq > 0:
-                    is_block = True; reasons.append(f"BigTrade {ltq:,}")
-                if abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
-                    is_block = True
-                    reasons.append(f"OI {'↑ADD' if oi_chg>0 else '↓EXIT'} {abs(oi_pct):.0f}%")
+            # 4. Large rupee value of the jump
+            value_cr = (vol_jump * ltp) / 1e7
+            if value_cr >= LARGE_VALUE_CR and vol_jump >= MIN_VOL_JUMP:
+                reasons.append(f"₹{value_cr:.1f}Cr")
 
-                st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp}
+            st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp}
 
-                if is_block:
-                    new.append({
-                        "time":ts,"category":cat,"symbol":symbol,
-                        "strike":str(sk) if sk else "FUT","type":kind,
-                        "expiry":exp,"ltp":ltp,"vol_jump":vol_jump,
-                        "total_vol":vol,"avg_vol":int(avg),
-                        "value_cr":round(value_cr,2),"ltq":ltq,
-                        "oi":oi,"oi_chg_pct":round(oi_pct,1),
-                        "trend":_trend(q,kind if kind in("CE","PE") else "CE"),
-                        "underlying":und,"reasons":" | ".join(reasons),
-                    })
-                del q
+            # Only log if genuinely unusual AND we have OI movement to interpret
+            if is_unusual:
+                label, emoji, bias = interpret_activity(kind, oi_chg, price_chg)
+                new.append({
+                    "time":ts,"category":cat,"symbol":symbol,
+                    "strike":str(sk) if sk else "FUT","type":kind,
+                    "expiry":exp,"ltp":ltp,"vol_jump":vol_jump,
+                    "total_vol":vol,"avg_vol":int(avg),
+                    "value_cr":round(value_cr,2),"ltq":ltq,
+                    "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),
+                    "price_chg":round(price_chg,2),
+                    "activity":label,"emoji":emoji,"bias":bias,
+                    "trend":f"{emoji} {label}",
+                    "underlying":ltp,"reasons":" · ".join(reasons),
+                })
+            del q
     return new
 
 # ── Market hours ───────────────────────────────────────────────────────────────
@@ -368,24 +404,19 @@ with st.expander("🔧 Diagnostic", expanded=False):
         else: st.error(f"❌ {k} MISSING")
     if auth_err: st.error(f"Auth: {auth_err}")
     if token_map:
-        st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} entries across {len(token_map)} symbols")
-        for sym,entries in token_map.items():
-            futs=sum(1 for e in entries if e.get("type")=="FUT")
-            opts=sum(1 for e in entries if e.get("type") in ("CE","PE"))
-            st.code(f"  {sym}: {futs} FUT + {opts} options = {len(entries)}")
+        st.code(f"Tokens loaded: {sum(len(v) for v in token_map.values())} high-volume contracts across {len(token_map)} categories")
+        for cat,entries in token_map.items():
+            st.code(f"  {cat}: top {len(entries)} by volume")
+            for e in entries[:8]:
+                tok=str(e["tok"]); q=sdk_quotes.get(tok,{})
+                v=_vol(q); ltp=_ltp(q)
+                lbl=f"{e['sym']}" if e['type']=="FUT" else f"{e['symbol']} {e['strike']} {e['type']}"
+                st.code(f"    {lbl} | vol={v:,} | ₹{ltp:,}")
         st.code(f"SDK quotes received: {len(sdk_quotes)}")
         if sdk_diag.get("stderr"):
             st.markdown("**Auth helper log:**")
             st.code(sdk_diag["stderr"])
-        st.markdown("**Live quote test:**")
-        tested=0
-        for sym,entries in token_map.items():
-            if not entries or tested>=5: continue
-            fut=next((e for e in entries if e.get("type")=="FUT"), entries[0])
-            q=live_quote(fut["tok"])
-            ltp=_ltp(q)
-            st.code(f"{sym} → LTP=₹{ltp:,}")
-            tested+=1
+        # (live quote test now shown inline above per category)
 
 st.markdown("---")
 
@@ -407,7 +438,7 @@ def live_section():
                 _STORE["feed"].insert(0, b)
             # Trim in-place to preserve the persistent reference
             del _STORE["feed"][60:]
-        st.caption(f"🔄 Monitoring {sum(len(v) for v in token_map.values())} instruments | "
+        st.caption(f"🔄 Monitoring top {sum(len(v) for v in token_map.values())} high-volume contracts | "
                    f"{len(st.session_state['feed'])} blocks logged | "
                    f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
@@ -422,31 +453,36 @@ def live_section():
             st.caption("⏳ Monitoring... blocks appear here as they trigger.")
     else:
         for b in feed[:25]:
-            icon="🔵" if b["type"]=="CE" else "🔴" if b["type"]=="PE" else "🟡"
-            # Build clean label: "GOLDM FUT" or "NIFTY 24500 CE"
+            # Clean label: "GOLDM FUT" or "NIFTY 24500 CE"
             if b["type"]=="FUT":
                 label=f"{b['symbol']} FUT"
             else:
                 label=f"{b['symbol']} {b['strike']} {b['type']}"
-            line=(f"`{b['time']}` {icon} **{label}**"
-                  f" [{b['expiry']}] · LTP ₹{b['ltp']:,} · **{b['reasons']}** · {b['trend']}")
-            val=b.get("value_cr",0)
-            if val>=2.0:   st.error(line)
-            elif val>=0.5: st.warning(line)
-            else:          st.info(line)
+            activity = b.get("activity","")
+            emoji    = b.get("emoji","")
+            line=(f"`{b['time']}` {emoji} **{activity}** — {label}"
+                  f" [{b['expiry']}] · ₹{b['ltp']:,} "
+                  f"(Δ{b.get('price_chg',0):+.1f}) · OI {b.get('oi_chg_pct',0):+.0f}% · {b['reasons']}")
+            # Color by institutional bias
+            bias = b.get("bias","NEUTRAL")
+            if   bias=="BULLISH": st.success(line)
+            elif bias=="BEARISH": st.error(line)
+            else:                 st.info(line)
 
     st.markdown("---")
     st.markdown("### 📊 Block Tables by Symbol")
 
     def _symbol_table(rows):
-        """Render one symbol's blocks as a table."""
+        """Render one symbol's blocks as a table with institutional activity."""
         st.dataframe(pd.DataFrame([{
             "Time":b["time"],
             "Strike":("—" if b["type"]=="FUT" else b["strike"]),
             "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']:,}",
-            "Vol Jump":f"{b['vol_jump']:,}","Total Vol":f"{b['total_vol']:,}",
-            "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
-            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
+            "Activity":f"{b.get('emoji','')} {b.get('activity','')}",
+            "Bias":b.get("bias",""),
+            "Price Δ":f"{b.get('price_chg',0):+.1f}",
+            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
+            "Vol Jump":f"{b['vol_jump']:,}",
             "Signals":b["reasons"],
         } for b in rows]),width="stretch",hide_index=True)
 
