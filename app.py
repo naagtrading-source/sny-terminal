@@ -42,8 +42,7 @@ IST = pytz.timezone("Asia/Kolkata")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CATEGORIES = {
-    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"],
-    "Stock":    ["RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
+    "Index":    ["NIFTY","BANKNIFTY"],
     "Commodity":["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 LOTS = {
@@ -72,14 +71,16 @@ def _run_auth_bg(holder):
             capture_output=True, text=True, timeout=240, env=env,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
-            holder["result"]=(None,{},{},{},f"auth failed: {proc.stderr[-200:]}")
+            holder["result"]=(None,{},{},{"stderr":proc.stderr[-800:]},f"auth failed: {proc.stderr[-200:]}")
         else:
             data=json.loads(proc.stdout.strip())
             if "error" in data:
-                holder["result"]=(None,{},{},{},f"auth error: {data['error']}")
+                holder["result"]=(None,{},{},{"stderr":proc.stderr[-800:]},f"auth error: {data['error']}")
             else:
+                d=data.get("diag",{})
+                d["stderr"]=proc.stderr[-800:]
                 holder["result"]=(data.get("session",{}),data.get("token_map",{}),
-                                  data.get("quotes",{}),data.get("diag",{}),None)
+                                  data.get("quotes",{}),d,None)
     except Exception as e:
         holder["result"]=(None,{},{},{},str(e))
     holder["done"]=True
@@ -347,7 +348,7 @@ mcx_l=((wd<5) and now.replace(hour=9,minute=0,second=0,microsecond=0)<=now<=
 
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown("## ⚡ SNY Block Order Detector")
-st.caption("Institutional block scanner — Index · Stocks · Commodities")
+st.caption("Institutional block scanner — Index & Commodities")
 
 c1,c2,c3,c4=st.columns(4)
 with c1:
@@ -373,6 +374,9 @@ with st.expander("🔧 Diagnostic", expanded=False):
             opts=sum(1 for e in entries if e.get("type") in ("CE","PE"))
             st.code(f"  {sym}: {futs} FUT + {opts} options = {len(entries)}")
         st.code(f"SDK quotes received: {len(sdk_quotes)}")
+        if sdk_diag.get("stderr"):
+            st.markdown("**Auth helper log:**")
+            st.code(sdk_diag["stderr"])
         st.markdown("**Live quote test:**")
         tested=0
         for sym,entries in token_map.items():
@@ -447,9 +451,8 @@ def live_section():
         } for b in rows]),width="stretch",hide_index=True)
 
     # Category tabs, each containing a SEPARATE table per symbol
-    cat_tabs=st.tabs(["📈 Index","📊 Stocks","🛢️ Commodities"])
+    cat_tabs=st.tabs(["📈 Index","🛢️ Commodities"])
     cat_order=[("Index",CATEGORIES["Index"]),
-               ("Stock",CATEGORIES["Stock"]),
                ("Commodity",CATEGORIES["Commodity"])]
 
     for tab,(cat,symbols) in zip(cat_tabs,cat_order):
