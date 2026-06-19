@@ -58,7 +58,7 @@ LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 10.0      # OI change > 10% = real position buildup
 
 # ── AUTH via subprocess — SDK loads/runs/exits, freeing its memory ─────────────
-@st.cache_resource(ttl=60, show_spinner=False)
+@st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth():
     """
     Spawns auth_helper.py as a subprocess.
@@ -94,6 +94,42 @@ def get_auth():
         return None, {}, {}, {}, str(e)
 
 session, token_map, sdk_quotes, sdk_diag, auth_err = get_auth()
+
+def fetch_quotes_fast():
+    """
+    Spawn quote_helper.py which reuses the saved session (no login) to fetch
+    fresh quotes quickly. Returns {token: quote_dict} or {} on failure.
+    Runs in a thread-safe subprocess; takes ~3-5s vs ~60s for full auth.
+    """
+    if not token_map:
+        return {}
+    # Build token list from token_map
+    toks=[]
+    for sym,entries in token_map.items():
+        for e in entries:
+            if e.get("tok"):
+                toks.append({"tok":e["tok"],"seg":e["seg"]})
+    if not toks:
+        return {}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "quote_helper.py"],
+            input=json.dumps(toks),
+            capture_output=True, text=True,
+            timeout=40, env={**os.environ, "PYTHONUNBUFFERED":"1"},
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return {}
+        data=json.loads(proc.stdout.strip())
+        if "error" in data:
+            # Session expired or missing — clear auth cache to force re-login next time
+            if data["error"] in ("no_session","session_load"):
+                get_auth.clear()
+            return {}
+        gc.collect()
+        return data.get("quotes",{})
+    except Exception:
+        return {}
 
 # ── Build session headers from whatever the subprocess found ───────────────────
 def build_headers(session, ck):
@@ -320,13 +356,12 @@ with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
 st.markdown("---")
 
 # ── Live data section — auto-reruns every 60s WITHOUT full page reload ─────────
-@st.fragment(run_every=65 if (nse_l or mcx_l) else None)
+@st.fragment(run_every=30 if (nse_l or mcx_l) else None)
 def live_section():
-    # Re-fetch fresh quotes each rerun (get_auth cache TTL=60s → re-spawns subprocess)
-    global sdk_quotes, token_map
-    _sess,_tm,_q,_diag,_err = get_auth()
-    if _q: sdk_quotes = _q
-    if _tm: token_map = _tm
+    # Fetch FRESH quotes only (fast, no re-login) using the lightweight quote helper
+    global sdk_quotes
+    fresh = fetch_quotes_fast()
+    if fresh: sdk_quotes = fresh
     if token_map and (nse_l or mcx_l):
         new_blocks = detect_blocks()
         if new_blocks:
@@ -375,7 +410,7 @@ def live_section():
             "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
             "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
             "Signals":b["reasons"],
-        } for b in rows]),use_container_width=True,hide_index=True)
+        } for b in rows]),width="stretch",hide_index=True)
 
     # Category tabs, each containing a SEPARATE table per symbol
     cat_tabs=st.tabs(["📈 Index","📊 Stocks","🛢️ Commodities"])
