@@ -156,6 +156,7 @@ def main():
     ist=pytz.timezone("Asia/Kolkata")
     today=datetime.datetime.now(ist).date()
     token_map={}   # symbol → [{token,seg,sym,type,strike,expiry}]
+    opt_debug={}   # symbol → debug string
 
     # Only scan the segment whose market is open right now (saves time)
     import datetime as _dt, pytz as _pytz
@@ -237,8 +238,12 @@ def main():
                                             "type":opt,"strike":int(sk),"expiry":ep})
 
             token_map[symbol]=entries
+            # Count option items found in raw for debugging
+            n_opts=sum(1 for item in raw if str(item.get("pOptionType",item.get("optTp",""))).strip().upper() in ("CE","PE","CALL","PUT","C","P"))
+            n_matched=sum(1 for item in raw if _matches(_sym(item),symbol))
+            opt_debug[symbol]=f"raw={len(raw)} matched={n_matched} opts_in_raw={n_opts} und={und} entries={len(entries)}"
             del raw; gc.collect()
-            print(f"[auth] {symbol}: {len(entries)} tokens", file=sys.stderr, flush=True)
+            print(f"[auth] {symbol}: {len(entries)} tokens, und={und}", file=sys.stderr, flush=True)
 
     # ── DIAGNOSTIC: capture exactly what the quote API returns ────────────────
     diag={}
@@ -302,7 +307,7 @@ def main():
     print(f"[quote] fetched {len(quotes)} quotes for {len(all_tokens)} tokens", file=sys.stderr, flush=True)
 
     # Output: session + token map + LIVE QUOTES
-    result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"ck":ck}
+    result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"opt_debug":opt_debug,"ck":ck}
     print(json.dumps(result))
     sys.stdout.flush()
 
