@@ -91,7 +91,7 @@ STEPS = {
     "RELIANCE":50,"HDFCBANK":20,"TCS":100,"INFY":50,"ICICIBANK":20,"SBIN":10,
     "GOLDM":100,"SILVERM":1000,"CRUDEOIL":100,"NATURALGAS":10,"COPPER":5,
 }
-STRIKE_RANGE=2
+STRIKE_RANGE=1
 
 def main():
     from neo_api_client import NeoAPI
@@ -287,7 +287,7 @@ def main():
         for e in entries:
             if e.get("tok") and e.get("type")!="FUT":
                 all_tokens.append((e["tok"], e["seg"]))
-    all_tokens=all_tokens[:60]
+    all_tokens=all_tokens[:30]
 
     # Group by segment, batch fetch
     by_seg={}
