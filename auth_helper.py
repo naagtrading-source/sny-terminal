@@ -175,7 +175,10 @@ def main():
             try:
                 r=_silent(lambda s=seg,sym=symbol: api.search_scrip(exchange_segment=s,symbol=sym))
                 raw=r.get("data",[]) or r.get("result",[]) if isinstance(r,dict) else (r if isinstance(r,list) else [])
-            except: raw=[]
+            except Exception as ex:
+                raw=[]
+                print(f"[scrip] {symbol}/{seg} search err: {ex}", file=sys.stderr, flush=True)
+            print(f"[scrip] {symbol}/{seg}: {len(raw)} records", file=sys.stderr, flush=True)
 
             entries=[]
             # Nearest FUT — ONE live quote to get underlying for ATM calc
