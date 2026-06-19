@@ -58,14 +58,50 @@ LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 10.0      # OI change > 10% = real position buildup
 
 # ── AUTH via subprocess — SDK loads/runs/exits, freeing its memory ─────────────
+# Background auth: run subprocess in a thread so the main script never blocks
+# the 60s health check. Result is stored and polled.
+@st.cache_resource
+def _auth_holder():
+    return {"done":False,"result":None,"thread":None}
+
+def _run_auth_bg(holder):
+    try:
+        env = {**os.environ, "PYTHONUNBUFFERED":"1"}
+        proc = subprocess.run(
+            [sys.executable, "auth_helper.py"],
+            capture_output=True, text=True, timeout=240, env=env,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            holder["result"]=(None,{},{},{},f"auth failed: {proc.stderr[-200:]}")
+        else:
+            data=json.loads(proc.stdout.strip())
+            if "error" in data:
+                holder["result"]=(None,{},{},{},f"auth error: {data['error']}")
+            else:
+                holder["result"]=(data.get("session",{}),data.get("token_map",{}),
+                                  data.get("quotes",{}),data.get("diag",{}),None)
+    except Exception as e:
+        holder["result"]=(None,{},{},{},str(e))
+    holder["done"]=True
+    gc.collect()
+
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth():
-    """
-    Spawns auth_helper.py as a subprocess.
-    The subprocess loads neo_api_client (~400MB), logs in, extracts tokens,
-    prints JSON, and EXITS — freeing its memory before our main process uses it.
-    Returns (session_headers, token_map, error_msg).
-    """
+    """Non-blocking auth via background thread. Returns immediately."""
+    import threading
+    holder=_auth_holder()
+    # Start auth in background if not already running
+    if holder["thread"] is None:
+        holder["thread"]=threading.Thread(target=_run_auth_bg,args=(holder,),daemon=True)
+        holder["thread"].start()
+    # Wait up to 45s for it (under the 60s health-check limit)
+    holder["thread"].join(timeout=45)
+    if holder["done"] and holder["result"]:
+        return holder["result"]
+    # Not done yet — return "connecting" state; next rerun will pick up result
+    return (None,{},{},{},"connecting")
+
+def _OLD_get_auth():
     try:
         env = {**os.environ, "PYTHONUNBUFFERED":"1"}
         proc = subprocess.run(
@@ -94,6 +130,12 @@ def get_auth():
         return None, {}, {}, {}, str(e)
 
 session, token_map, sdk_quotes, sdk_diag, auth_err = get_auth()
+
+# If auth still connecting in background, auto-rerun to poll for result
+if auth_err == "connecting":
+    import time as _t
+    _t.sleep(3)
+    st.rerun()
 
 def fetch_quotes_fast():
     """
@@ -309,9 +351,10 @@ st.caption("Institutional block scanner — Index · Stocks · Commodities")
 
 c1,c2,c3,c4=st.columns(4)
 with c1:
-    if auth_err:     st.error("🔴 Auth Failed")
-    elif token_map:  st.success("🟢 Ready")
-    else:            st.warning("⏳ Connecting...")
+    if auth_err == "connecting": st.warning("⏳ Connecting...")
+    elif auth_err:               st.error("🔴 Auth Failed")
+    elif token_map:              st.success("🟢 Ready")
+    else:                        st.warning("⏳ Connecting...")
 with c2: st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
 with c3: st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
 with c4: st.metric("IST",now.strftime("%H:%M:%S"))
