@@ -51,10 +51,11 @@ LOTS = {
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
-VOL_SPIKE_MULT = 2.0
-MIN_VOL_JUMP   = 5000
-LARGE_VALUE_CR = 0.5
-OI_CHANGE_PCT  = 5.0
+# Higher thresholds = only TRULY unusual institutional blocks
+VOL_SPIKE_MULT = 3.5       # jump must be > 3.5x recent average
+MIN_VOL_JUMP   = 25000     # ignore jumps under 25k contracts
+LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
+OI_CHANGE_PCT  = 10.0      # OI change > 10% = real position buildup
 
 # ── AUTH via subprocess — SDK loads/runs/exits, freeing its memory ─────────────
 @st.cache_resource(ttl=60, show_spinner=False)
@@ -349,29 +350,53 @@ def live_section():
     else:
         for b in feed[:25]:
             icon="🔵" if b["type"]=="CE" else "🔴" if b["type"]=="PE" else "🟡"
-            line=(f"`{b['time']}` {icon} **{b['symbol']} {b['strike']} {b['type']}**"
-                  f" [{b['expiry']}] | LTP ₹{b['ltp']} | **{b['reasons']}** | {b['trend']}")
+            # Build clean label: "GOLDM FUT" or "NIFTY 24500 CE"
+            if b["type"]=="FUT":
+                label=f"{b['symbol']} FUT"
+            else:
+                label=f"{b['symbol']} {b['strike']} {b['type']}"
+            line=(f"`{b['time']}` {icon} **{label}**"
+                  f" [{b['expiry']}] · LTP ₹{b['ltp']:,} · **{b['reasons']}** · {b['trend']}")
             val=b.get("value_cr",0)
             if val>=2.0:   st.error(line)
             elif val>=0.5: st.warning(line)
             else:          st.info(line)
 
     st.markdown("---")
-    t1,t2,t3=st.tabs(["📈 Index Blocks","📊 Stock Blocks","🛢️ Commodity Blocks"])
-    def tbl(cat):
-        rows=[b for b in feed if b["category"]==cat]
-        if not rows: st.caption(f"No {cat.lower()} blocks detected yet."); return
+    st.markdown("### 📊 Block Tables by Symbol")
+
+    def _symbol_table(rows):
+        """Render one symbol's blocks as a table."""
         st.dataframe(pd.DataFrame([{
-            "Time":b["time"],"Symbol":b["symbol"],"Strike":b["strike"],
-            "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']}",
+            "Time":b["time"],
+            "Strike":("—" if b["type"]=="FUT" else b["strike"]),
+            "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']:,}",
             "Vol Jump":f"{b['vol_jump']:,}","Total Vol":f"{b['total_vol']:,}",
             "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
             "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
             "Signals":b["reasons"],
         } for b in rows]),use_container_width=True,hide_index=True)
-    with t1: tbl("Index")
-    with t2: tbl("Stock")
-    with t3: tbl("Commodity")
+
+    # Category tabs, each containing a SEPARATE table per symbol
+    cat_tabs=st.tabs(["📈 Index","📊 Stocks","🛢️ Commodities"])
+    cat_order=[("Index",CATEGORIES["Index"]),
+               ("Stock",CATEGORIES["Stock"]),
+               ("Commodity",CATEGORIES["Commodity"])]
+
+    for tab,(cat,symbols) in zip(cat_tabs,cat_order):
+        with tab:
+            any_shown=False
+            for sym in symbols:
+                rows=[b for b in feed if b["symbol"]==sym]
+                if not rows: continue
+                any_shown=True
+                # Each symbol gets its own labeled expandable table
+                latest=rows[0]
+                st.markdown(f"#### {sym}  ·  ₹{latest['underlying']:,.1f}  ·  {len(rows)} blocks")
+                _symbol_table(rows)
+                st.markdown("")  # spacing
+            if not any_shown:
+                st.caption(f"No {cat.lower()} blocks detected yet.")
 
 live_section()
 st.caption("⏱️ Live section auto-updates every 60s (no full page reload)")
