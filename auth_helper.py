@@ -153,66 +153,60 @@ def main():
                     session[f"apikey_{kk}"]=str(kv)
     except: pass
 
-    # Collect minimal tokens: nearest FUT + ATM±STRIKE_RANGE options per symbol
+    # ══ VOLUME-FIRST SCAN ══════════════════════════════════════════════════════
+    # Collect ALL F&O contracts (FUT + every option strike/expiry) for monitored
+    # symbols, batch-fetch their volumes, rank by volume, keep only the TOP ones.
     ist=pytz.timezone("Asia/Kolkata")
     today=datetime.datetime.now(ist).date()
-    token_map={}   # symbol → [{token,seg,sym,type,strike,expiry}]
-    opt_debug={}   # symbol → debug string
 
-    # Only scan the segment whose market is open right now (saves time)
     import datetime as _dt, pytz as _pytz
     _now=_dt.datetime.now(_pytz.timezone("Asia/Kolkata")); _wd=_now.weekday()
     _nse=(_now.replace(hour=9,minute=15,second=0)<=_now<=_now.replace(hour=15,minute=30,second=0)) and _wd<5
     _mcx=((_wd<5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=23,minute=30,second=0)) or \
          ((_wd==5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=14,minute=0,second=0))
 
+    TOP_N = 20          # keep this many highest-volume contracts per category
+    NEAR_EXPIRIES = 2   # only scan nearest N expiries (current + next)
+
+    def _vol_of(q):
+        for k in ("last_volume","volume","vol","volume_traded"):
+            v=q.get(k)
+            if v not in (None,""):
+                try: return int(_f(v))
+                except: pass
+        return 0
+
+    # category → list of all candidate contracts {tok,seg,sym,type,strike,expiry}
+    candidates={"Index":[], "Commodity":[]}
+    cat_of={"nse_fo":"Index", "mcx_fo":"Commodity"}
+
     for seg,symbols in SYMBOLS.items():
-        # Skip closed segments to avoid slow hanging quote calls
         if seg in ("nse_fo","nse_cm") and not _nse: continue
         if seg=="mcx_fo" and not _mcx: continue
+        cat=cat_of.get(seg,"Index")
         for symbol in symbols:
-            step=STEPS.get(symbol,50)
             try:
                 r=_silent(lambda s=seg,sym=symbol: api.search_scrip(exchange_segment=s,symbol=sym))
                 raw=r.get("data",[]) or r.get("result",[]) if isinstance(r,dict) else (r if isinstance(r,list) else [])
             except Exception as ex:
                 raw=[]
-                print(f"[scrip] {symbol}/{seg} search err: {ex}", file=sys.stderr, flush=True)
+                print(f"[scrip] {symbol}/{seg} err: {ex}", file=sys.stderr, flush=True)
             print(f"[scrip] {symbol}/{seg}: {len(raw)} records", file=sys.stderr, flush=True)
 
-            entries=[]
-            # Nearest FUT — ONE live quote to get underlying for ATM calc
-            futs=sorted([
-                (ep,item) for item in raw
-                for ep in [_parse_exp(item)]
-                if ep and "FUT" in _sym(item) and _matches(_sym(item),symbol)
-            ], key=lambda x:x[0])
+            # Find the nearest expiries available for this symbol
+            exps=sorted(set(ep for item in raw for ep in [_parse_exp(item)] if ep))
+            keep_exps=set(exps[:NEAR_EXPIRIES])
 
-            und=0.0
-            if futs:
-                ep,item=futs[0]; tok=_tok(item)
-                entries.append({"tok":tok,"seg":seg,"sym":_sym(item),
-                                 "type":"FUT","strike":None,"expiry":ep})
-                try:
-                    qr=_silent(lambda t=tok,s=seg: api.quotes(
-                        instrument_tokens=[{"instrument_token":str(t),"exchange_segment":s}],
-                        quote_type="ltp"))
-                    q=_extract_quote(qr)
-                    for k in ("ltp","last_price","last_traded_price","close"):
-                        v=q.get(k)
-                        if v not in (None,"",0,"0",0.0,"0.0000"):
-                            f=_f(v)
-                            if f>0: und=f; break
-                except Exception as ex:
-                    print(f"[und] {symbol} err: {ex}", file=sys.stderr, flush=True)
-
-            # Options near ATM — find REAL strikes from data (any interval)
-            if und>0:
-                # Step 1: collect all available option strikes for this symbol
-                opt_items=[]
-                for item in raw:
-                    s2=_sym(item)
-                    if not _matches(s2,symbol): continue
+            for item in raw:
+                if not _matches(_sym(item),symbol): continue
+                ep=_parse_exp(item)
+                if not ep or ep not in keep_exps: continue
+                s=_sym(item); tok=_tok(item)
+                if not tok: continue
+                if "FUT" in s:
+                    candidates[cat].append({"tok":tok,"seg":seg,"sym":s,"type":"FUT",
+                                            "strike":None,"expiry":ep,"symbol":symbol})
+                else:
                     raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
                     opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
                     if not opt: continue
@@ -223,95 +217,52 @@ def main():
                             try: sk=float(v)
                             except: pass
                             break
-                    ep=_parse_exp(item)
-                    if sk and sk>0 and ep:
-                        opt_items.append((sk,opt,ep,item))
-
-                # Step 2: find the STRIKE_RANGE strikes closest to ATM on each side
-                if opt_items:
-                    all_strikes=sorted(set(sk for sk,_,_,_ in opt_items))
-                    # nearest strike to underlying
-                    atm_strike=min(all_strikes, key=lambda x:abs(x-und))
-                    atm_idx=all_strikes.index(atm_strike)
-                    lo=max(0, atm_idx-STRIKE_RANGE)
-                    hi=min(len(all_strikes), atm_idx+STRIKE_RANGE+1)
-                    watch=set(all_strikes[lo:hi])
-                    for sk,opt,ep,item in opt_items:
-                        if sk in watch:
-                            entries.append({"tok":_tok(item),"seg":seg,"sym":_sym(item),
-                                            "type":opt,"strike":int(sk),"expiry":ep})
-
-            token_map[symbol]=entries
-            # Count option items found in raw for debugging
-            n_opts=sum(1 for item in raw if str(item.get("pOptionType",item.get("optTp",""))).strip().upper() in ("CE","PE","CALL","PUT","C","P"))
-            n_matched=sum(1 for item in raw if _matches(_sym(item),symbol))
-            opt_debug[symbol]=f"raw={len(raw)} matched={n_matched} opts_in_raw={n_opts} und={und} entries={len(entries)}"
+                    if sk and sk>0:
+                        candidates[cat].append({"tok":tok,"seg":seg,"sym":s,"type":opt,
+                                                "strike":int(sk),"expiry":ep,"symbol":symbol})
             del raw; gc.collect()
-            print(f"[auth] {symbol}: {len(entries)} tokens, und={und}", file=sys.stderr, flush=True)
 
-    # ── DIAGNOSTIC: capture exactly what the quote API returns ────────────────
-    diag={}
-    try:
-        diag["methods"]=[m for m in dir(api) if not m.startswith("_") and
-                         any(x in m.lower() for x in ("quote","ltp","market","depth","subscribe","feed"))]
-    except Exception as ex: diag["methods_err"]=str(ex)
-
-    # Try get_live_quotes on the first available token, capture raw + error
-    _first=None
-    for sym,entries in token_map.items():
-        for e in entries:
-            if e.get("tok"): _first=(e["tok"],e["seg"]); break
-        if _first: break
-
-    if _first:
-        tk,sg=_first
-        diag["test_token"]=f"{tk}/{sg}"
-        # Show FULL quote so we can see every field name (esp. the LTP field)
-        try:
-            r=_silent(lambda: api.quotes(
-                instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":sg}],
-                quote_type=None))
-            q=_extract_quote(r)
-            diag["quote_keys"]=str(list(q.keys()))
-            diag["quote_full"]=str(q)[:800]
-        except Exception as ex:
-            diag["quote_err"]=str(ex)[:300]
-
-    # ── Fetch LIVE QUOTES for all tokens via SDK ──────────────────────────────
+    # ── Batch-fetch volume for ALL candidates, then rank ──────────────────────
     quotes={}
-    all_tokens=[]
-    # Prioritize FUT first, then options — cap at 60 to stay within timeout
-    for sym,entries in token_map.items():
-        for e in entries:
-            if e.get("tok") and e.get("type")=="FUT":
-                all_tokens.append((e["tok"], e["seg"]))
-    for sym,entries in token_map.items():
-        for e in entries:
-            if e.get("tok") and e.get("type")!="FUT":
-                all_tokens.append((e["tok"], e["seg"]))
-    all_tokens=all_tokens[:30]
+    token_map={}   # category → top contracts (with quotes attached via quotes dict)
 
-    # Group by segment, batch fetch
-    by_seg={}
-    for tok,seg in all_tokens:
-        by_seg.setdefault(seg,[]).append(str(tok))
-
-    for seg,toks in by_seg.items():
-        for tk in toks:
+    for cat,conts in candidates.items():
+        print(f"[scan] {cat}: {len(conts)} candidate contracts", file=sys.stderr, flush=True)
+        vols=[]   # (volume, contract, quote)
+        # Fetch quote for each candidate (batched one-by-one; background thread has time)
+        for c in conts:
             try:
-                qr=_silent(lambda tk=tk,seg=seg: api.quotes(
-                    instrument_tokens=[{"instrument_token":str(tk),"exchange_segment":seg}],
-                    quote_type=None))   # None = full quote (ltp+vol+oi+depth)
+                qr=_silent(lambda c=c: api.quotes(
+                    instrument_tokens=[{"instrument_token":str(c["tok"]),"exchange_segment":c["seg"]}],
+                    quote_type=None))
                 q=_extract_quote(qr)
-                if q:
-                    quotes[tk]=q
+                v=_vol_of(q)
+                if v>0:
+                    vols.append((v,c,q))
             except Exception as ex:
-                print(f"[quote] {tk} err: {ex}", file=sys.stderr, flush=True)
+                pass
+        # Rank by volume, keep TOP_N
+        vols.sort(key=lambda x:x[0], reverse=True)
+        top=vols[:TOP_N]
+        entries=[]
+        for v,c,q in top:
+            quotes[str(c["tok"])]=q
+            entries.append(c)
+        token_map[cat]=entries
+        print(f"[scan] {cat}: kept top {len(entries)} by volume (max vol={top[0][0] if top else 0})",
+              file=sys.stderr, flush=True)
 
-    print(f"[quote] fetched {len(quotes)} quotes for {len(all_tokens)} tokens", file=sys.stderr, flush=True)
+    # ── Diagnostic: capture one full quote for field reference ────────────────
+    diag={}
+    _first=None
+    for cat,entries in token_map.items():
+        if entries: _first=entries[0]; break
+    if _first:
+        q=quotes.get(str(_first["tok"]),{})
+        diag["quote_keys"]=str(list(q.keys()))
+        diag["sample"]=f"{_first['sym']} vol={_vol_of(q)} ltp={q.get('ltp')}"
 
-    # Output: session + token map + LIVE QUOTES
-    result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"opt_debug":opt_debug,"ck":ck}
+    result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"ck":ck}
     print(json.dumps(result))
     sys.stdout.flush()
 
