@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v10-buysell"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v11-accdist"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
@@ -370,6 +370,25 @@ def detect_blocks():
             # Volume vs regular (how many times its normal)
             vol_mult = (vol_jump/avg) if avg > 0 else 0
 
+            # ── ACCUMULATION / DISTRIBUTION (silent institutional absorption) ──
+            # Signature: price barely moves (tight range) BUT volume is huge AND
+            # OI is building. Big players absorbing supply/demand without moving price.
+            acc_dist = ""; acc_emoji = ""
+            price_pct = abs(price_chg / ltp * 100) if ltp > 0 else 0
+            is_flat = price_pct < 0.5          # price moved less than 0.5%
+            huge_vol = vol_mult >= VOL_SPIKE_MULT   # volume >= 3x regular
+            oi_building = oi_chg > 0 and prev_oi > 0 and oi_pct >= 3
+            if is_flat and huge_vol and oi_building:
+                # Direction from order-book pressure / slight price bias
+                if bq > sq*1.1 or price_chg > 0:
+                    acc_dist, acc_emoji = "ACCUMULATION", "🟢🔇"   # silent buying
+                elif sq > bq*1.1 or price_chg < 0:
+                    acc_dist, acc_emoji = "DISTRIBUTION", "🔴🔇"   # silent selling
+                else:
+                    acc_dist, acc_emoji = "ABSORPTION", "🟡🔇"     # unclear side
+                is_unusual = True
+                flags.append(f"{acc_emoji} {acc_dist} (flat price + {vol_mult:.1f}× vol + OI{oi_pct:+.0f}%)")
+
             st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp}
 
             # Show every contract that has real volume (it's a LIST).
@@ -383,6 +402,7 @@ def detect_blocks():
                     "value_cr":round(value_cr,2),"jump_cr":round(jump_cr,2),
                     "ltq":ltq,"pressure":pressure,
                     "side":side,"side_emoji":side_emoji,
+                    "acc_dist":acc_dist,"acc_emoji":acc_emoji,
                     "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),
                     "price_chg":round(price_chg,2),
                     "activity":label,"emoji":emoji,"bias":bias,
@@ -468,6 +488,22 @@ def live_section():
                    f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
     # ═══ LIVE VOLUME LIST (current snapshot, ranked by volume) ═══════════════
+    # ═══ ACCUMULATION / DISTRIBUTION ALERTS (the silent institutional plays) ═══
+    acc_dist_hits = [b for b in _STORE.get("snapshot",[]) if b.get("acc_dist")]
+    if acc_dist_hits:
+        st.markdown("### 🔇 Silent Accumulation / Distribution")
+        st.caption("Price flat but huge volume + OI building — big players absorbing quietly")
+        for b in acc_dist_hits:
+            sym = (f"{b['symbol']} FUT" if b['type']=="FUT"
+                   else f"{b['symbol']} {b['strike']} {b['type']}")
+            line = (f"{b.get('acc_emoji','')} **{b.get('acc_dist','')}** — {sym} "
+                    f"[{b['expiry']}] · ₹{b['ltp']:,} (flat, Δ{b.get('price_chg',0):+.1f}) · "
+                    f"Vol {b.get('vol_mult',0):.1f}× normal · OI {b['oi_chg_pct']:+.0f}%")
+            if "ACCU" in b.get("acc_dist",""):   st.success(line)
+            elif "DIST" in b.get("acc_dist",""): st.error(line)
+            else:                                st.warning(line)
+        st.markdown("---")
+
     st.markdown("### 📊 Live Volume List — what's trading & the interpretation")
     snapshot = _STORE.get("snapshot", [])
     if not snapshot:
@@ -485,13 +521,13 @@ def live_section():
             "Volume":f"{b['total_vol']:,}",
             "vs Regular":(f"{b.get('vol_mult',0):.1f}× normal" if b.get('vol_mult',0)>0 else "—"),
             "Buy/Sell":f"{b.get('side_emoji','')} {b.get('side','')}",
+            "Acc/Dist":(f"{b.get('acc_emoji','')} {b.get('acc_dist','')}" if b.get('acc_dist') else "—"),
             "LTP":f"₹{b['ltp']:,}",
             "Price Δ":f"{b.get('price_chg',0):+.1f}",
             "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
             "Interpretation":f"{b.get('emoji','')} {b.get('activity','')}",
-            "Turnover":f"₹{b['value_cr']:.1f}Cr",
         } for b in snapshot]),width="stretch",hide_index=True,height=420)
-        st.caption("🔥 = volume much higher than this contract's regular level · Buy/Sell from price direction + order pressure")
+        st.caption("🔥 = volume much higher than regular · 🔇 Acc/Dist = silent institutional absorption (flat price + huge volume + OI build)")
 
     # ═══ UNUSUAL EVENTS LOG (only the institutional flags, over time) ════════
     st.markdown("---")
