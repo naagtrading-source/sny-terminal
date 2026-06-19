@@ -82,8 +82,7 @@ def _parse_exp(item):
     return None
 
 SYMBOLS = {
-    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY",
-               "RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
+    "nse_fo": ["NIFTY","BANKNIFTY"],
     "mcx_fo": ["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 STEPS = {
