@@ -8,7 +8,7 @@ Main process stays light (~120MB) using only requests for live quotes.
 """
 import streamlit as st
 import pandas as pd
-import os, json, re, subprocess, sys, gc
+import os, json, re, subprocess, sys, gc, time
 from datetime import datetime
 from collections import defaultdict
 
@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v12-showall"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v13-livequotes"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
@@ -465,28 +465,70 @@ with st.expander("🔧 Diagnostic", expanded=False):
 st.markdown("---")
 
 # ── Live data section — auto-reruns every 60s WITHOUT full page reload ─────────
-@st.fragment(run_every=90 if (nse_l or mcx_l) else None)
+@st.cache_resource
+def _quote_holder():
+    return {"quotes":{}, "thread":None, "ts":0}
+
+def _refresh_quotes_bg(holder, toks):
+    try:
+        proc = subprocess.run(
+            [sys.executable, "quote_helper.py"],
+            input=json.dumps(toks), capture_output=True, text=True,
+            timeout=60, env={**os.environ, "PYTHONUNBUFFERED":"1"},
+        )
+        if proc.returncode==0 and proc.stdout.strip():
+            data=json.loads(proc.stdout.strip())
+            if "quotes" in data and data["quotes"]:
+                holder["quotes"]=data["quotes"]
+                holder["ts"]=time.time()
+    except Exception:
+        pass
+    gc.collect()
+
+@st.fragment(run_every=60 if (nse_l or mcx_l) else None)
 def live_section():
-    # Re-read cached auth (re-spawns auth_helper only when 20-min cache expires).
-    # Within cache window this is instant. Quotes refresh when cache renews.
     global sdk_quotes, token_map
+    # Keep token_map from cached auth
     try:
         _s,_tm,_q,_d,_e = get_auth()
-        if _q: sdk_quotes = _q
         if _tm: token_map = _tm
+        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q  # seed first time
     except: pass
+
+    # ── Refresh quotes in background (live updating, non-blocking) ──────────
+    if token_map and (nse_l or mcx_l):
+        toks=[]
+        for cat,entries in token_map.items():
+            for e in entries:
+                if e.get("tok"): toks.append({"tok":e["tok"],"seg":e["seg"]})
+        holder=_quote_holder()
+        # Start a fresh fetch if previous finished
+        if holder["thread"] is None or not holder["thread"].is_alive():
+            import threading
+            holder["thread"]=threading.Thread(target=_refresh_quotes_bg,args=(holder,toks),daemon=True)
+            holder["thread"].start()
+        # Use the freshest quotes we have
+        if holder["quotes"]:
+            sdk_quotes = holder["quotes"]
+
     if token_map and (nse_l or mcx_l):
         snapshot = detect_blocks()   # current tick, ranked by volume
         _STORE["snapshot"] = snapshot
         # Log only the UNUSUAL ones into the persistent feed (history)
         unusual = [b for b in snapshot if b.get("is_unusual")]
         if unusual:
+            sym_log = _STORE.setdefault("sym_log", {})
             for b in unusual:
                 _STORE["feed"].insert(0, b)
+                # Add a new row to that symbol's own table
+                slog = sym_log.setdefault(b["symbol"], [])
+                slog.insert(0, b)
+                del slog[50:]   # keep last 50 per symbol
             del _STORE["feed"][80:]
+        qage = int(time.time()-_quote_holder()["ts"]) if _quote_holder()["ts"] else -1
         st.caption(f"🔄 Monitoring top {sum(len(v) for v in token_map.values())} high-volume contracts | "
                    f"{len(_STORE.get('feed',[]))} unusual events logged | "
-                   f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
+                   f"quotes {qage}s old | updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
     # ═══ LIVE VOLUME LIST (current snapshot, ranked by volume) ═══════════════
     # ═══ ACCUMULATION / DISTRIBUTION ALERTS (the silent institutional plays) ═══
@@ -554,33 +596,39 @@ def live_section():
             else:                 st.info(line)
 
     st.markdown("---")
-    st.markdown("### 📂 By Category")
+    st.markdown("### 📂 Unusual Activity — separate table per symbol")
+    st.caption("New row added each time unusual volume hits that symbol's strike")
 
-    def _cat_table(rows):
-        if not rows:
-            if not token_map:
-                st.warning("⏳ No contracts loaded yet — auth still connecting or market closed.")
-            elif not _STORE.get("snapshot"):
-                st.caption("⏳ Waiting for first volume snapshot...")
-            else:
-                st.caption("No contracts with volume in this category right now.")
-            return
-        st.dataframe(pd.DataFrame([{
-            "":("🔥" if b.get("is_unusual") else ""),
-            "Contract":(f"{b['symbol']} FUT" if b['type']=="FUT"
-                        else f"{b['symbol']} {b['strike']} {b['type']}"),
-            "Expiry":b["expiry"],"Volume":f"{b['total_vol']:,}",
-            "LTP":f"₹{b['ltp']:,}","Price Δ":f"{b.get('price_chg',0):+.1f}",
-            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
-            "Interpretation":f"{b.get('emoji','')} {b.get('activity','')}",
-            "Bias":b.get("bias",""),"Flow":b.get("pressure",""),
-        } for b in rows]),width="stretch",hide_index=True)
+    # Per-symbol accumulated unusual events (persists, grows over time)
+    sym_log = _STORE.setdefault("sym_log", {})
+
+    def _render_symbol_tables(category):
+        symbols = CATEGORIES.get(category, [])
+        any_shown = False
+        for symbol in symbols:
+            rows = sym_log.get(symbol, [])
+            if not rows: continue
+            any_shown = True
+            st.markdown(f"#### {symbol} — {len(rows)} unusual events")
+            st.dataframe(pd.DataFrame([{
+                "Time":r["time"],
+                "Strike":("FUT" if r["type"]=="FUT" else f"{r['strike']} {r['type']}"),
+                "Expiry":r["expiry"],
+                "Volume":f"{r['total_vol']:,}",
+                "Vol Jump":f"{r['vol_jump']:,}",
+                "vs Regular":(f"{r.get('vol_mult',0):.1f}×" if r.get('vol_mult',0)>0 else "—"),
+                "Buy/Sell":f"{r.get('side_emoji','')} {r.get('side','')}",
+                "Acc/Dist":(f"{r.get('acc_emoji','')} {r.get('acc_dist','')}" if r.get('acc_dist') else "—"),
+                "LTP":f"₹{r['ltp']:,}",
+                "OI Δ%":f"{r['oi_chg_pct']:+.0f}%",
+                "Signal":r["reasons"],
+            } for r in rows[:30]]),width="stretch",hide_index=True)
+        if not any_shown:
+            st.caption(f"No unusual {category.lower()} activity logged yet. Rows appear when real unusual volume hits.")
 
     cat_tabs=st.tabs(["📈 Index","🛢️ Commodities"])
-    with cat_tabs[0]:
-        _cat_table([b for b in snapshot if b["category"]=="Index"])
-    with cat_tabs[1]:
-        _cat_table([b for b in snapshot if b["category"]=="Commodity"])
+    with cat_tabs[0]: _render_symbol_tables("Index")
+    with cat_tabs[1]: _render_symbol_tables("Commodity")
 
 live_section()
 st.caption("⏱️ Live section auto-updates every 60s (no full page reload)")
