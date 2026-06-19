@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v13-livequotes"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v14-symlog"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
@@ -601,6 +601,11 @@ def live_section():
 
     # Per-symbol accumulated unusual events (persists, grows over time)
     sym_log = _STORE.setdefault("sym_log", {})
+    # Backfill from feed if sym_log is empty but feed has events (after redeploy)
+    if not sym_log and _STORE.get("feed"):
+        for b in reversed(_STORE["feed"]):
+            sym_log.setdefault(b.get("symbol","?"), []).insert(0, b)
+        for k in sym_log: del sym_log[k][50:]
 
     def _render_symbol_tables(category):
         symbols = CATEGORIES.get(category, [])
