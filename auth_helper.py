@@ -153,11 +153,12 @@ def main():
                     session[f"apikey_{kk}"]=str(kv)
     except: pass
 
-    # ══ VOLUME-FIRST SCAN ══════════════════════════════════════════════════════
-    # Collect ALL F&O contracts (FUT + every option strike/expiry) for monitored
-    # symbols, batch-fetch their volumes, rank by volume, keep only the TOP ones.
-    ist=pytz.timezone("Asia/Kolkata")
-    today=datetime.datetime.now(ist).date()
+    # ══ VOLUME-FIRST SCAN — FUTs first, then options near ATM ══════════════════
+    # ROOT CAUSE OF OLD BUG: FUTs and options share one expiry pool.
+    # MCX options have WEEKLY expiries, FUTs have MONTHLY. Mixing them in
+    # keep_exps[:2] picks 2 weekly dates, dropping everything else.
+    # FIX: collect FUTs unconditionally (there are few), then options separately
+    # with their OWN nearest expiry, capped to prevent API call explosion.
 
     import datetime as _dt, pytz as _pytz
     _now=_dt.datetime.now(_pytz.timezone("Asia/Kolkata")); _wd=_now.weekday()
@@ -166,7 +167,7 @@ def main():
          ((_wd==5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=14,minute=0,second=0))
 
     TOP_N = 20          # keep this many highest-volume contracts per category
-    NEAR_EXPIRIES = 2   # only scan nearest N expiries (current + next)
+    OPTS_PER_SYM = 12   # max option candidates per symbol before volume-ranking
 
     def _vol_of(q):
         for k in ("last_volume","volume","vol","volume_traded"):
@@ -176,7 +177,6 @@ def main():
                 except: pass
         return 0
 
-    # category → list of all candidate contracts {tok,seg,sym,type,strike,expiry}
     candidates={"Index":[], "Commodity":[]}
     cat_of={"nse_fo":"Index", "mcx_fo":"Commodity"}
 
@@ -193,43 +193,102 @@ def main():
                 print(f"[scrip] {symbol}/{seg} err: {ex}", file=sys.stderr, flush=True)
             print(f"[scrip] {symbol}/{seg}: {len(raw)} records", file=sys.stderr, flush=True)
 
-            # Find the nearest expiries available for this symbol
-            exps=sorted(set(ep for item in raw for ep in [_parse_exp(item)] if ep))
-            keep_exps=set(exps[:NEAR_EXPIRIES])
-
-            # DIAGNOSTIC: log why options get rejected — sample first few non-FUT items
-            _dbg_opt=0
+            # ── PASS 1: Collect ALL FUTs (no expiry filter — only ~2-3 exist) ──
+            futs_found = []
             for item in raw:
-                s_dbg=_sym(item)
-                if "FUT" not in s_dbg and _dbg_opt<2:
-                    _dbg_opt+=1
-                    print(f"[opt-sample] {symbol}: sym={s_dbg!r} keys={list(item.keys())[:12]} "
-                          f"matches={_matches(s_dbg,symbol)} exp={_parse_exp(item)}",
-                          file=sys.stderr, flush=True)
-
-            for item in raw:
-                if not _matches(_sym(item),symbol): continue
-                ep=_parse_exp(item)
-                if not ep or ep not in keep_exps: continue
-                s=_sym(item); tok=_tok(item)
+                s=_sym(item)
+                if not _matches(s, symbol): continue
+                if "FUT" not in s: continue
+                ep=_parse_exp(item); tok=_tok(item)
                 if not tok: continue
-                if "FUT" in s:
-                    candidates[cat].append({"tok":tok,"seg":seg,"sym":s,"type":"FUT",
-                                            "strike":None,"expiry":ep,"symbol":symbol})
-                else:
-                    raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
-                    opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
-                    if not opt: continue
-                    sk=None
-                    for k in ("pStrikePrice","strkPrc","strikePrice"):
-                        v=item.get(k)
-                        if v is not None:
-                            try: sk=float(v)
+                futs_found.append({"tok":tok,"seg":seg,"sym":s,"type":"FUT",
+                                   "strike":None,"expiry":ep or "?","symbol":symbol})
+            # Keep nearest 2 FUTs by expiry
+            futs_found.sort(key=lambda x: x["expiry"])
+            for f in futs_found[:2]:
+                candidates[cat].append(f)
+
+            # Get FUT underlying price for ATM strike selection
+            und = 0.0
+            if futs_found:
+                try:
+                    qr=_silent(lambda f=futs_found[0]: api.quotes(
+                        instrument_tokens=[{"instrument_token":str(f["tok"]),"exchange_segment":f["seg"]}],
+                        quote_type=None))
+                    q=_extract_quote(qr)
+                    for k in ("ltp","last_price","close"):
+                        v=q.get(k)
+                        if v not in (None,"",0,"0","0.0000"):
+                            try:
+                                fv=float(str(v).replace(",",""))
+                                if fv>0: und=fv; break
                             except: pass
-                            break
-                    if sk and sk>0:
-                        candidates[cat].append({"tok":tok,"seg":seg,"sym":s,"type":opt,
-                                                "strike":int(sk),"expiry":ep,"symbol":symbol})
+                except: pass
+            print(f"[scan] {symbol}: {len(futs_found)} FUTs, underlying=₹{und}", file=sys.stderr, flush=True)
+
+            # ── PASS 2: Collect options — own expiry tracking, near ATM ────────
+            # First: gather all option records with their parsed data
+            all_opts = []
+            n_matched=0; n_exp=0; n_type=0; n_strike=0
+            for item in raw:
+                s=_sym(item)
+                if not _matches(s, symbol): continue
+                if "FUT" in s: continue
+                n_matched+=1
+                ep=_parse_exp(item)
+                if not ep:
+                    n_exp+=1; continue
+                # Detect option type from pOptionType OR from the symbol suffix
+                raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
+                opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
+                if not opt:
+                    # Try parsing from symbol: ends with CE or PE
+                    if s.upper().endswith("CE"): opt="CE"
+                    elif s.upper().endswith("PE"): opt="PE"
+                if not opt:
+                    n_type+=1; continue
+                sk=None
+                for k in ("pStrikePrice","strkPrc","strikePrice"):
+                    v=item.get(k)
+                    if v is not None:
+                        try: sk=float(v)
+                        except: pass
+                        break
+                if not sk or sk<=0:
+                    # Try extracting strike from symbol (digits before CE/PE)
+                    # re already imported at module level
+                    m=re.search(r'(\d+)(CE|PE)$', s.upper())
+                    if m:
+                        try: sk=float(m.group(1))
+                        except: pass
+                if not sk or sk<=0:
+                    n_strike+=1; continue
+                tok=_tok(item)
+                if not tok: continue
+                all_opts.append({"tok":tok,"seg":seg,"sym":s,"type":opt,
+                                 "strike":int(sk),"expiry":ep,"symbol":symbol,"_sk":sk})
+
+            print(f"[scan] {symbol}: {n_matched} non-FUT matched, {len(all_opts)} options parsed "
+                  f"(dropped: {n_exp} no-exp, {n_type} no-type, {n_strike} no-strike)",
+                  file=sys.stderr, flush=True)
+
+            if all_opts:
+                # Option-specific nearest expiry (separate from FUT expiries!)
+                opt_exps = sorted(set(o["expiry"] for o in all_opts))
+                keep_opt_exps = set(opt_exps[:2])  # nearest 2 OPTION expiries
+                all_opts = [o for o in all_opts if o["expiry"] in keep_opt_exps]
+                print(f"[scan] {symbol}: option expiries kept={keep_opt_exps}, {len(all_opts)} after exp filter",
+                      file=sys.stderr, flush=True)
+
+                # Near ATM: if we have underlying, keep strikes closest to it
+                if und > 0 and len(all_opts) > OPTS_PER_SYM:
+                    all_opts.sort(key=lambda o: abs(o["_sk"] - und))
+                    all_opts = all_opts[:OPTS_PER_SYM]
+
+                for o in all_opts:
+                    del o["_sk"]
+                    candidates[cat].append(o)
+
             del raw; gc.collect()
 
     # ── Batch-fetch volume for ALL candidates, then rank ──────────────────────
