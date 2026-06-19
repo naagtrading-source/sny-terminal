@@ -1,11 +1,12 @@
 """
-quote_helper.py — FAST quote fetcher. Reuses the pickled SDK session saved by
-auth_helper.py, so it skips the slow login. Reads token list from stdin,
-fetches live quotes, prints JSON. Runs in ~3-5s instead of ~60s.
+quote_helper.py — FAST quote refresher subprocess.
+Reads a token list from stdin, logs in, fetches ONLY those quotes (no scrip
+search / no option discovery — that's the slow part), prints JSON, exits.
+This keeps quotes live-updating without re-running the heavy token discovery.
 """
-import sys, json, io, contextlib, threading, pickle, os
+import os, sys, json, io, contextlib, threading
 
-def _silent(fn):
+def _silent(fn, timeout=30):
     r=[None]; e=[None]
     def w():
         buf=io.StringIO()
@@ -13,7 +14,7 @@ def _silent(fn):
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 r[0]=fn()
         except Exception as ex: e[0]=ex
-    t=threading.Thread(target=w,daemon=True); t.start(); t.join(timeout=25)
+    t=threading.Thread(target=w,daemon=True); t.start(); t.join(timeout=timeout)
     if e[0]: raise e[0]
     return r[0]
 
@@ -34,16 +35,30 @@ def main():
     if not raw_in:
         print(json.dumps({"error":"no_input"})); return
     tokens=json.loads(raw_in)   # [{"tok":"x","seg":"y"}, ...]
+    if not tokens:
+        print(json.dumps({"error":"empty_tokens"})); return
 
-    # Restore the pickled session (no login!)
-    if not os.path.exists("/tmp/kotak_api.pkl"):
-        print(json.dumps({"error":"no_session"})); return
-    try:
-        with open("/tmp/kotak_api.pkl","rb") as sf:
-            api=pickle.load(sf)
-    except Exception as ex:
-        print(json.dumps({"error":f"session_load:{ex}"})); return
+    from neo_api_client import NeoAPI
 
+    ck   = os.environ["KOTAK_CONSUMER_KEY"]
+    mob  = os.environ["KOTAK_MOBILE"].lstrip("+").lstrip("91") if os.environ.get("KOTAK_MOBILE") else ""
+    mob  = mob[-10:]
+    ucc  = os.environ.get("KOTAK_UCC","")
+    mpin = os.environ.get("KOTAK_MPIN","")
+    import pyotp
+    totp = pyotp.TOTP(os.environ["KOTAK_TOTP_SECRET"]).now()
+
+    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck))
+    ok=False
+    for mfmt in [f"+91{mob}",mob,f"91{mob}"]:
+        r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
+        if isinstance(r1,dict) and not r1.get("error"):
+            ok=True; break
+    if not ok:
+        print(json.dumps({"error":"login_failed"})); return
+    _silent(lambda: api.totp_validate(mpin=mpin))
+
+    # Fetch quotes for the known tokens — batched where possible
     quotes={}
     for t in tokens:
         tk=str(t["tok"]); seg=t["seg"]
@@ -53,8 +68,8 @@ def main():
                 quote_type=None))
             q=_extract_quote(qr)
             if q: quotes[tk]=q
-        except Exception as ex:
-            print(f"[quote] {tk} err: {ex}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
     print(json.dumps({"quotes":quotes}))
     sys.stdout.flush()
