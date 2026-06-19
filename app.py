@@ -122,7 +122,7 @@ def _run_auth_bg(holder):
     holder["done"]=True
     gc.collect()
 
-CONFIG_VERSION = "v8-volume-ranked"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v10-buysell"  # bump to force cache refresh on config change
 
 @st.cache_resource(ttl=1200, show_spinner=False)
 def get_auth(_version=CONFIG_VERSION):
@@ -286,7 +286,7 @@ def _trend(q,opt):
 # Persistent store — survives page reloads (cache_resource is shared/persistent)
 @st.cache_resource
 def _persistent_store():
-    return {"prev": defaultdict(dict), "volhist": defaultdict(list), "feed": []}
+    return {"prev": defaultdict(dict), "volhist": defaultdict(list), "feed": [], "snapshot": []}
 
 _STORE = _persistent_store()
 # Mirror into session_state keys for compatibility with existing code
@@ -333,45 +333,68 @@ def detect_blocks():
             # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
             is_unusual = False; reasons = []
 
-            # 1. Volume spike vs its OWN recent average (not just high volume)
+            # ── Interpretation (always computed, shown beside each) ──────────
+            label, emoji, bias = interpret_activity(kind, oi_chg, price_chg)
+            # Buy/sell pressure as a secondary read
+            bq = int(_f(q.get("total_buy", 0) or 0))
+            sq = int(_f(q.get("total_sell", 0) or 0))
+            pressure = "BUY-led" if bq > sq*1.2 else "SELL-led" if sq > bq*1.2 else "balanced"
+
+            # ── Flags for "unusual" (highlighted, but ALL high-vol shown) ─────
+            flags = []
             if avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
                 is_unusual = True
-                reasons.append(f"Vol {vol_jump/avg:.1f}× normal")
-
-            # 2. Large OI jump = fresh institutional positions
+                flags.append(f"Vol {vol_jump/avg:.1f}× normal")
             if abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
                 is_unusual = True
-                reasons.append(f"OI {oi_pct:+.0f}%")
-
-            # 3. Big single trade (block print)
+                flags.append(f"OI {oi_pct:+.0f}%")
             if ltq >= lot * BIG_TRADE_LOTS and ltq > 0:
                 is_unusual = True
-                reasons.append(f"Block {ltq:,}")
+                flags.append(f"Block {ltq:,}")
 
-            # 4. Large rupee value of the jump
-            value_cr = (vol_jump * ltp) / 1e7
-            if value_cr >= LARGE_VALUE_CR and vol_jump >= MIN_VOL_JUMP:
-                reasons.append(f"₹{value_cr:.1f}Cr")
+            value_cr = (vol * ltp) / 1e7   # total traded value (turnover)
+            jump_cr  = (vol_jump * ltp) / 1e7
+
+            # ── BUYING or SELLING? ───────────────────────────────────────────
+            # Combine price direction (with volume) + order-book pressure.
+            # Aggressive buying: price up while volume surges, buy-side heavier.
+            # Aggressive selling: price down while volume surges, sell-side heavier.
+            buy_score = 0
+            if price_chg > 0: buy_score += 1
+            if price_chg < 0: buy_score -= 1
+            if bq > sq*1.2:   buy_score += 1
+            if sq > bq*1.2:   buy_score -= 1
+            if   buy_score >= 1:  side, side_emoji = "BUYING",  "🟢"
+            elif buy_score <= -1: side, side_emoji = "SELLING", "🔴"
+            else:                 side, side_emoji = "MIXED",   "⚪"
+            # Volume vs regular (how many times its normal)
+            vol_mult = (vol_jump/avg) if avg > 0 else 0
 
             st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp}
 
-            # Only log if genuinely unusual AND we have OI movement to interpret
-            if is_unusual:
-                label, emoji, bias = interpret_activity(kind, oi_chg, price_chg)
+            # Show every contract that has real volume (it's a LIST).
+            # Skip only dead/no-volume contracts.
+            if vol >= MIN_VOL_JUMP or is_unusual:
                 new.append({
                     "time":ts,"category":cat,"symbol":symbol,
                     "strike":str(sk) if sk else "FUT","type":kind,
                     "expiry":exp,"ltp":ltp,"vol_jump":vol_jump,
-                    "total_vol":vol,"avg_vol":int(avg),
-                    "value_cr":round(value_cr,2),"ltq":ltq,
+                    "total_vol":vol,"avg_vol":int(avg),"vol_mult":round(vol_mult,1),
+                    "value_cr":round(value_cr,2),"jump_cr":round(jump_cr,2),
+                    "ltq":ltq,"pressure":pressure,
+                    "side":side,"side_emoji":side_emoji,
                     "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),
                     "price_chg":round(price_chg,2),
                     "activity":label,"emoji":emoji,"bias":bias,
+                    "is_unusual":is_unusual,
                     "trend":f"{emoji} {label}",
-                    "underlying":ltp,"reasons":" · ".join(reasons),
+                    "underlying":ltp,"reasons":" · ".join(flags) if flags else "—",
                 })
             del q
+    # Sort the list by volume (highest traded first)
+    new.sort(key=lambda b: b["total_vol"], reverse=True)
     return new
+
 
 # ── Market hours ───────────────────────────────────────────────────────────────
 now=datetime.now(IST); wd=now.weekday()
@@ -432,28 +455,52 @@ def live_section():
         if _tm: token_map = _tm
     except: pass
     if token_map and (nse_l or mcx_l):
-        new_blocks = detect_blocks()
-        if new_blocks:
-            for b in reversed(new_blocks):
+        snapshot = detect_blocks()   # current tick, ranked by volume
+        _STORE["snapshot"] = snapshot
+        # Log only the UNUSUAL ones into the persistent feed (history)
+        unusual = [b for b in snapshot if b.get("is_unusual")]
+        if unusual:
+            for b in unusual:
                 _STORE["feed"].insert(0, b)
-            # Trim in-place to preserve the persistent reference
-            del _STORE["feed"][60:]
+            del _STORE["feed"][80:]
         st.caption(f"🔄 Monitoring top {sum(len(v) for v in token_map.values())} high-volume contracts | "
-                   f"{len(st.session_state['feed'])} blocks logged | "
+                   f"{len(_STORE.get('feed',[]))} unusual events logged | "
                    f"updated {datetime.now(IST).strftime('%H:%M:%S')}")
 
-    st.markdown("### 📡 Live Block Feed")
-    feed=_STORE["feed"]
-    if not feed:
+    # ═══ LIVE VOLUME LIST (current snapshot, ranked by volume) ═══════════════
+    st.markdown("### 📊 Live Volume List — what's trading & the interpretation")
+    snapshot = _STORE.get("snapshot", [])
+    if not snapshot:
         if not (nse_l or mcx_l):
             st.info("🌙 Markets closed. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
         elif not token_map:
-            st.warning("⏳ Auth in progress — will start scanning once connected.")
+            st.warning("⏳ Auth in progress — building the volume list once connected.")
         else:
-            st.caption("⏳ Monitoring... blocks appear here as they trigger.")
+            st.caption("⏳ Loading volume data... (needs a tick or two to populate)")
+    else:
+        st.dataframe(pd.DataFrame([{
+            "":("🔥" if b.get("is_unusual") else ""),
+            "Symbol":(f"{b['symbol']} FUT" if b['type']=="FUT"
+                      else f"{b['symbol']} {b['strike']} {b['type']}"),
+            "Volume":f"{b['total_vol']:,}",
+            "vs Regular":(f"{b.get('vol_mult',0):.1f}× normal" if b.get('vol_mult',0)>0 else "—"),
+            "Buy/Sell":f"{b.get('side_emoji','')} {b.get('side','')}",
+            "LTP":f"₹{b['ltp']:,}",
+            "Price Δ":f"{b.get('price_chg',0):+.1f}",
+            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
+            "Interpretation":f"{b.get('emoji','')} {b.get('activity','')}",
+            "Turnover":f"₹{b['value_cr']:.1f}Cr",
+        } for b in snapshot]),width="stretch",hide_index=True,height=420)
+        st.caption("🔥 = volume much higher than this contract's regular level · Buy/Sell from price direction + order pressure")
+
+    # ═══ UNUSUAL EVENTS LOG (only the institutional flags, over time) ════════
+    st.markdown("---")
+    st.markdown("### 📡 Unusual Activity Log")
+    feed=_STORE["feed"]
+    if not feed:
+        st.caption("⏳ Unusual institutional events will appear here as they trigger.")
     else:
         for b in feed[:25]:
-            # Clean label: "GOLDM FUT" or "NIFTY 24500 CE"
             if b["type"]=="FUT":
                 label=f"{b['symbol']} FUT"
             else:
@@ -470,41 +517,27 @@ def live_section():
             else:                 st.info(line)
 
     st.markdown("---")
-    st.markdown("### 📊 Block Tables by Symbol")
+    st.markdown("### 📂 By Category")
 
-    def _symbol_table(rows):
-        """Render one symbol's blocks as a table with institutional activity."""
+    def _cat_table(rows):
+        if not rows:
+            st.caption("No data yet."); return
         st.dataframe(pd.DataFrame([{
-            "Time":b["time"],
-            "Strike":("—" if b["type"]=="FUT" else b["strike"]),
-            "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']:,}",
-            "Activity":f"{b.get('emoji','')} {b.get('activity','')}",
-            "Bias":b.get("bias",""),
-            "Price Δ":f"{b.get('price_chg',0):+.1f}",
+            "":("🔥" if b.get("is_unusual") else ""),
+            "Contract":(f"{b['symbol']} FUT" if b['type']=="FUT"
+                        else f"{b['symbol']} {b['strike']} {b['type']}"),
+            "Expiry":b["expiry"],"Volume":f"{b['total_vol']:,}",
+            "LTP":f"₹{b['ltp']:,}","Price Δ":f"{b.get('price_chg',0):+.1f}",
             "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
-            "Vol Jump":f"{b['vol_jump']:,}",
-            "Signals":b["reasons"],
+            "Interpretation":f"{b.get('emoji','')} {b.get('activity','')}",
+            "Bias":b.get("bias",""),"Flow":b.get("pressure",""),
         } for b in rows]),width="stretch",hide_index=True)
 
-    # Category tabs, each containing a SEPARATE table per symbol
     cat_tabs=st.tabs(["📈 Index","🛢️ Commodities"])
-    cat_order=[("Index",CATEGORIES["Index"]),
-               ("Commodity",CATEGORIES["Commodity"])]
-
-    for tab,(cat,symbols) in zip(cat_tabs,cat_order):
-        with tab:
-            any_shown=False
-            for sym in symbols:
-                rows=[b for b in feed if b["symbol"]==sym]
-                if not rows: continue
-                any_shown=True
-                # Each symbol gets its own labeled expandable table
-                latest=rows[0]
-                st.markdown(f"#### {sym}  ·  ₹{latest['underlying']:,.1f}  ·  {len(rows)} blocks")
-                _symbol_table(rows)
-                st.markdown("")  # spacing
-            if not any_shown:
-                st.caption(f"No {cat.lower()} blocks detected yet.")
+    with cat_tabs[0]:
+        _cat_table([b for b in snapshot if b["category"]=="Index"])
+    with cat_tabs[1]:
+        _cat_table([b for b in snapshot if b["category"]=="Commodity"])
 
 live_section()
 st.caption("⏱️ Live section auto-updates every 60s (no full page reload)")
