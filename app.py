@@ -123,7 +123,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v17-fix-deadlock"
+CONFIG_VERSION = "v18-clean-layout"
 
 def get_auth():
     """
@@ -480,152 +480,104 @@ def _refresh_quotes_bg(holder, toks):
 @st.fragment(run_every=60 if (nse_l or mcx_l) else None)
 def live_section():
     global sdk_quotes, token_map
-    # Keep token_map from cached auth
     try:
         _s,_tm,_q,_d,_e = get_auth()
         if _tm: token_map = _tm
-        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q  # seed first time
+        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q
     except: pass
 
-    # ── Refresh quotes in background (live updating, non-blocking) ──────────
+    # ── Refresh quotes in background ──────────────────────────────────────────
     if token_map and (nse_l or mcx_l):
         toks=[]
         for cat,entries in token_map.items():
             for e in entries:
                 if e.get("tok"): toks.append({"tok":e["tok"],"seg":e["seg"]})
         holder=_quote_holder()
-        # Start a fresh fetch if previous finished
         if holder["thread"] is None or not holder["thread"].is_alive():
             import threading
             holder["thread"]=threading.Thread(target=_refresh_quotes_bg,args=(holder,toks),daemon=True)
             holder["thread"].start()
-        # Use the freshest quotes we have
         if holder["quotes"]:
             sdk_quotes = holder["quotes"]
 
+    # ── Detect unusual activity & store per-strike ────────────────────────────
+    strike_log = _STORE.setdefault("strike_log", {})
+
     if token_map and (nse_l or mcx_l):
-        snapshot = detect_blocks()   # current tick, ranked by volume
+        snapshot = detect_blocks()
         _STORE["snapshot"] = snapshot
-        # Log only the UNUSUAL ones into the persistent feed (history)
         unusual = [b for b in snapshot if b.get("is_unusual")]
-        if unusual:
-            sym_log = _STORE.setdefault("sym_log", {})
-            for b in unusual:
-                _STORE["feed"].insert(0, b)
-                # Add a new row to that symbol's own table
-                slog = sym_log.setdefault(b["symbol"], [])
-                slog.insert(0, b)
-                del slog[50:]   # keep last 50 per symbol
-            del _STORE["feed"][80:]
+        for b in unusual:
+            skey = f"{b['symbol']}|{b['type']}|{b['strike']}"
+            slog = strike_log.setdefault(skey, [])
+            slog.insert(0, b)
+            del slog[30:]
+
         qage = int(time.time()-_quote_holder()["ts"]) if _quote_holder()["ts"] else -1
-        st.caption(f"🔄 Monitoring top {sum(len(v) for v in token_map.values())} high-volume contracts | "
-                   f"{len(_STORE.get('feed',[]))} unusual events logged | "
-                   f"quotes {qage}s old | updated {datetime.now(IST).strftime('%H:%M:%S')}")
+        st.caption(f"Monitoring {sum(len(v) for v in token_map.values())} contracts | "
+                   f"quotes {qage}s old | {datetime.now(IST).strftime('%H:%M:%S')}")
+    elif not (nse_l or mcx_l):
+        st.info("Markets closed — NSE 9:15–15:30 · MCX 9:00–23:30 IST")
 
-    # ═══ LIVE VOLUME LIST (current snapshot, ranked by volume) ═══════════════
-    # ═══ ACCUMULATION / DISTRIBUTION ALERTS (the silent institutional plays) ═══
-    acc_dist_hits = [b for b in _STORE.get("snapshot",[]) if b.get("acc_dist")]
-    if acc_dist_hits:
-        st.markdown("### 🔇 Silent Accumulation / Distribution")
-        st.caption("Price flat but huge volume + OI building — big players absorbing quietly")
-        for b in acc_dist_hits:
-            sym = (f"{b['symbol']} FUT" if b['type']=="FUT"
-                   else f"{b['symbol']} {b['strike']} {b['type']}")
-            line = (f"{b.get('acc_emoji','')} **{b.get('acc_dist','')}** — {sym} "
-                    f"[{b['expiry']}] · ₹{b['ltp']:,} (flat, Δ{b.get('price_chg',0):+.1f}) · "
-                    f"Vol {b.get('vol_mult',0):.1f}× normal · OI {b['oi_chg_pct']:+.0f}%")
-            if "ACCU" in b.get("acc_dist",""):   st.success(line)
-            elif "DIST" in b.get("acc_dist",""): st.error(line)
-            else:                                st.warning(line)
-        st.markdown("---")
-
-    st.markdown("### 📊 Live Volume List — what's trading & the interpretation")
-    snapshot = _STORE.get("snapshot", [])
-    if not snapshot:
-        if not (nse_l or mcx_l):
-            st.info("🌙 Markets closed. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
-        elif not token_map:
-            st.warning("⏳ Auth in progress — building the volume list once connected.")
-        else:
-            st.caption("⏳ Loading volume data... (needs a tick or two to populate)")
-    else:
-        st.dataframe(pd.DataFrame([{
-            "":("🔥" if b.get("is_unusual") else ""),
-            "Symbol":(f"{b['symbol']} FUT" if b['type']=="FUT"
-                      else f"{b['symbol']} {b['strike']} {b['type']}"),
-            "Volume":f"{b['total_vol']:,}",
-            "vs Regular":(f"{b.get('vol_mult',0):.1f}× normal" if b.get('vol_mult',0)>0 else "—"),
-            "Buy/Sell":f"{b.get('side_emoji','')} {b.get('side','')}",
-            "Acc/Dist":(f"{b.get('acc_emoji','')} {b.get('acc_dist','')}" if b.get('acc_dist') else "—"),
-            "LTP":f"₹{b['ltp']:,}",
-            "Price Δ":f"{b.get('price_chg',0):+.1f}",
-            "OI Δ%":f"{b['oi_chg_pct']:+.0f}%",
-            "Interpretation":f"{b.get('emoji','')} {b.get('activity','')}",
-        } for b in snapshot]),width="stretch",hide_index=True,height=420)
-        st.caption("🔥 = volume much higher than regular · 🔇 Acc/Dist = silent institutional absorption (flat price + huge volume + OI build)")
-
-    # ═══ UNUSUAL EVENTS LOG (only the institutional flags, over time) ════════
-    st.markdown("---")
-    st.markdown("### 📡 Unusual Activity Log")
-    feed=_STORE["feed"]
-    if not feed:
-        st.caption("⏳ Unusual institutional events will appear here as they trigger.")
-    else:
-        for b in feed[:25]:
-            if b["type"]=="FUT":
-                label=f"{b['symbol']} FUT"
-            else:
-                label=f"{b['symbol']} {b['strike']} {b['type']}"
-            activity = b.get("activity","")
-            emoji    = b.get("emoji","")
-            line=(f"`{b['time']}` {emoji} **{activity}** — {label}"
-                  f" [{b['expiry']}] · ₹{b['ltp']:,} "
-                  f"(Δ{b.get('price_chg',0):+.1f}) · OI {b.get('oi_chg_pct',0):+.0f}% · {b['reasons']}")
-            # Color by institutional bias
-            bias = b.get("bias","NEUTRAL")
-            if   bias=="BULLISH": st.success(line)
-            elif bias=="BEARISH": st.error(line)
-            else:                 st.info(line)
-
-    st.markdown("---")
-    st.markdown("### 📂 Unusual Activity — separate table per symbol")
-    st.caption("New row added each time unusual volume hits that symbol's strike")
-
-    # Per-symbol accumulated unusual events (persists, grows over time)
-    sym_log = _STORE.setdefault("sym_log", {})
-    # Backfill from feed if sym_log is empty but feed has events (after redeploy)
-    if not sym_log and _STORE.get("feed"):
-        for b in reversed(_STORE["feed"]):
-            sym_log.setdefault(b.get("symbol","?"), []).insert(0, b)
-        for k in sym_log: del sym_log[k][50:]
-
-    def _render_symbol_tables(category):
+    # ══ TWO TABS: NSE / Commodities ══════════════════════════════════════════
+    def _render_tab(category):
         symbols = CATEGORIES.get(category, [])
+
+        # Acc/Dist alerts on top (silent institutional absorption)
+        acc_hits = [b for b in _STORE.get("snapshot",[])
+                    if b.get("acc_dist") and b.get("category")==category]
+        if acc_hits:
+            st.markdown("##### 🔇 Accumulation / Distribution")
+            for b in acc_hits:
+                contract = (f"{b['symbol']} FUT" if b['type']=="FUT"
+                            else f"{b['symbol']} {b['strike']} {b['type']}")
+                line = (f"{b.get('acc_emoji','')} **{b.get('acc_dist','')}** — {contract} "
+                        f"· ₹{b['ltp']:,} (flat Δ{b.get('price_chg',0):+.1f}) "
+                        f"· Vol {b.get('vol_mult',0):.1f}× · OI {b['oi_chg_pct']:+.0f}%")
+                if "ACCU" in b.get("acc_dist",""):   st.success(line)
+                elif "DIST" in b.get("acc_dist",""): st.error(line)
+                else:                                 st.warning(line)
+            st.markdown("")
+
+        # Per-strike tables (each strike = its own table, new rows on top)
         any_shown = False
         for symbol in symbols:
-            rows = sym_log.get(symbol, [])
-            if not rows: continue
-            any_shown = True
-            st.markdown(f"#### {symbol} — {len(rows)} unusual events")
-            st.dataframe(pd.DataFrame([{
-                "Time":r["time"],
-                "Strike":("FUT" if r["type"]=="FUT" else f"{r['strike']} {r['type']}"),
-                "Expiry":r["expiry"],
-                "Volume":f"{r['total_vol']:,}",
-                "Vol Jump":f"{r['vol_jump']:,}",
-                "vs Regular":(f"{r.get('vol_mult',0):.1f}×" if r.get('vol_mult',0)>0 else "—"),
-                "Buy/Sell":f"{r.get('side_emoji','')} {r.get('side','')}",
-                "Acc/Dist":(f"{r.get('acc_emoji','')} {r.get('acc_dist','')}" if r.get('acc_dist') else "—"),
-                "LTP":f"₹{r['ltp']:,}",
-                "OI Δ%":f"{r['oi_chg_pct']:+.0f}%",
-                "Signal":r["reasons"],
-            } for r in rows[:30]]),width="stretch",hide_index=True)
-        if not any_shown:
-            st.caption(f"No unusual {category.lower()} activity logged yet. Rows appear when real unusual volume hits.")
+            sym_keys = sorted(
+                [k for k in strike_log if k.startswith(f"{symbol}|")],
+                key=lambda k: strike_log[k][0]["total_vol"] if strike_log[k] else 0,
+                reverse=True)
+            for skey in sym_keys:
+                rows = strike_log[skey]
+                if not rows: continue
+                any_shown = True
+                parts = skey.split("|")
+                title = f"{parts[0]} FUT" if parts[1]=="FUT" else f"{parts[0]} {parts[2]} {parts[1]}"
+                latest = rows[0]
+                st.markdown(f"**{title}** {latest.get('emoji','')} · ₹{latest['ltp']:,} · {len(rows)} events")
+                st.dataframe(pd.DataFrame([{
+                    "Time": r["time"],
+                    "Volume": f"{r['total_vol']:,}",
+                    "Vol Δ": f"+{r['vol_jump']:,}" if r['vol_jump']>0 else f"{r['vol_jump']:,}",
+                    "×Avg": (f"{r.get('vol_mult',0):.1f}×" if r.get('vol_mult',0)>0 else ""),
+                    "Buy/Sell": f"{r.get('side_emoji','')} {r.get('side','')}",
+                    "LTP": f"₹{r['ltp']:,}",
+                    "OI Δ%": f"{r['oi_chg_pct']:+.0f}%",
+                    "Activity": f"{r.get('emoji','')} {r.get('activity','')}",
+                    "Acc/Dist": (f"{r.get('acc_emoji','')} {r.get('acc_dist','')}"
+                                 if r.get('acc_dist') else ""),
+                    "Signal": r.get("reasons",""),
+                } for r in rows]),width="stretch",hide_index=True)
+                st.markdown("")
 
-    cat_tabs=st.tabs(["📈 Index","🛢️ Commodities"])
-    with cat_tabs[0]: _render_symbol_tables("Index")
-    with cat_tabs[1]: _render_symbol_tables("Commodity")
+        if not any_shown:
+            if not (nse_l or mcx_l) or not token_map:
+                st.caption("Waiting for market data...")
+            else:
+                st.caption("No unusual activity yet — only very large/unusual volume events appear here.")
+
+    tab_nse, tab_mcx = st.tabs(["📈 NSE","🛢️ Commodities"])
+    with tab_nse:  _render_tab("Index")
+    with tab_mcx:  _render_tab("Commodity")
 
 live_section()
-st.caption("⏱️ Live section auto-updates every 60s (no full page reload)")
+st.caption("Auto-updates every 60s")
