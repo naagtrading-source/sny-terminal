@@ -97,7 +97,7 @@ def interpret_activity(opt_type, oi_change, price_change):
 # the 60s health check. Result is stored and polled.
 @st.cache_resource
 def _auth_holder():
-    return {"done":False,"result":None,"thread":None}
+    return {"done":False,"result":None,"thread":None,"ts":0}
 
 def _run_auth_bg(holder):
     try:
@@ -120,53 +120,45 @@ def _run_auth_bg(holder):
     except Exception as e:
         holder["result"]=(None,{},{},{},str(e))
     holder["done"]=True
+    holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v16-options-fix"  # bump to force cache refresh on config change
+CONFIG_VERSION = "v17-fix-deadlock"
 
-@st.cache_resource(ttl=1200, show_spinner=False)
-def get_auth(_version=CONFIG_VERSION):
-    """Non-blocking auth via background thread. Returns immediately."""
+def get_auth():
+    """
+    Non-blocking auth. NOT cached (the holder IS cached).
+    Checks the persistent holder each call. Starts background thread on first call.
+    Re-auths every 20 minutes via timestamp check.
+    """
     import threading
     holder=_auth_holder()
+
+    # If done and fresh (within 20 min), return result immediately
+    if holder["done"] and holder["result"] and holder["ts"] > 0:
+        age = time.time() - holder["ts"]
+        if age < 1200:
+            return holder["result"]
+        # Expired — reset for fresh auth
+        holder["done"] = False
+        holder["result"] = None
+        holder["thread"] = None
+
     # Start auth in background if not already running
-    if holder["thread"] is None:
+    if holder["thread"] is None or (not holder["thread"].is_alive() and not holder["done"]):
+        holder["done"] = False
         holder["thread"]=threading.Thread(target=_run_auth_bg,args=(holder,),daemon=True)
         holder["thread"].start()
-    # Wait up to 45s for it (under the 60s health-check limit)
-    holder["thread"].join(timeout=45)
+
+    # Wait briefly (under 60s health-check limit) then return whatever we have
+    if holder["thread"] and holder["thread"].is_alive():
+        holder["thread"].join(timeout=2)  # short wait, don't block
+
     if holder["done"] and holder["result"]:
         return holder["result"]
-    # Not done yet — return "connecting" state; next rerun will pick up result
-    return (None,{},{},{},"connecting")
 
-def _OLD_get_auth():
-    try:
-        env = {**os.environ, "PYTHONUNBUFFERED":"1"}
-        proc = subprocess.run(
-            [sys.executable, "auth_helper.py"],
-            capture_output=True, text=True,
-            timeout=180, env=env,
-        )
-        if proc.returncode != 0:
-            return None, {}, {}, {}, f"auth_helper exited {proc.returncode}: {proc.stderr[-300:]}"
-        stdout = proc.stdout.strip()
-        if not stdout:
-            return None, {}, {}, {}, f"auth_helper no output. stderr: {proc.stderr[-300:]}"
-        data = json.loads(stdout)
-        if "error" in data:
-            return None, {}, {}, {}, f"auth error: {data['error']}"
-        gc.collect()
-        try:
-            import ctypes
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except: pass
-        st.session_state["_opt_debug"]=data.get("opt_debug",{})
-        return data.get("session",{}), data.get("token_map",{}), data.get("quotes",{}), data.get("diag",{}), None
-    except subprocess.TimeoutExpired:
-        return None, {}, {}, {}, "auth_helper timed out after 180s — too many symbols, will retry"
-    except Exception as e:
-        return None, {}, {}, {}, str(e)
+    # Not done yet — return "connecting" state; rerun will pick up result
+    return (None,{},{},{},"connecting")
 
 session, token_map, sdk_quotes, sdk_diag, auth_err = get_auth()
 
