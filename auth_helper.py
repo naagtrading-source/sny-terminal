@@ -161,7 +161,7 @@ def main():
          ((_wd==5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=14,minute=0,second=0))
 
     TOP_N = 20
-    OPTS_PER_SYM = 12
+    OPTS_PER_SYM = 4
 
     def _vol_of(q):
         for k in ("last_volume","volume","vol"):
@@ -177,6 +177,7 @@ def main():
     def _cat(s): return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
 
     candidates={"Index":[], "Stock":[], "Commodity":[]}
+    all_fut_quotes={}  # accumulate FUT quotes for output
 
     for seg,symbols in SYMBOLS.items():
         if seg in ("nse_fo","nse_cm") and not _nse: continue
@@ -211,14 +212,15 @@ def main():
             futs.sort(key=lambda x: x["expiry"])
             for f in futs[:2]: candidates[cat].append(f)
 
-            # Get underlying price from nearest FUT
+            # Get underlying price from nearest FUT (and save quote for later)
             und=0.0
             if futs:
                 try:
                     qr=_silent(lambda f=futs[0]: api.quotes(
-                        instrument_tokens=[{"instrument_token":str(f["tok"]),"exchange_segment":f["seg"]}],
+                        instrument_tokens=[{"instrument_token":str(futs[0]["tok"]),"exchange_segment":futs[0]["seg"]}],
                         quote_type=None))
                     q=_extract_quote(qr)
+                    if q: all_fut_quotes[str(futs[0]["tok"])]=q  # save for output
                     for k in ("ltp","last_price","close"):
                         v=q.get(k)
                         if v not in (None,"",0,"0","0.0000"):
@@ -285,38 +287,17 @@ def main():
 
             del raw; gc.collect()
 
-    # ── Volume-rank candidates, keep top per category ─────────────────────────
-    quotes={}; token_map={}
-    scan_start=_time.time(); SCAN_BUDGET=180
+    # ── Collect tokens — NO option quote fetching (quote_helper does that live)
+    quotes=dict(all_fut_quotes); token_map={}
 
     for cat,conts in candidates.items():
-        print(f"[rank] {cat}: {len(conts)} candidates", file=sys.stderr, flush=True)
-        vols=[]
-        for c in conts:
-            if _time.time()-scan_start > SCAN_BUDGET:
-                print(f"[rank] {cat}: budget hit after {len(vols)}", file=sys.stderr, flush=True)
-                break
-            try:
-                qr=_silent(lambda c=c: api.quotes(
-                    instrument_tokens=[{"instrument_token":str(c["tok"]),"exchange_segment":c["seg"]}],
-                    quote_type=None))
-                q=_extract_quote(qr)
-                v=_vol_of(q)
-                if v>0: vols.append((v,c,q))
-            except: pass
-        vols.sort(key=lambda x:x[0], reverse=True)
-        top_futs=[(v,c,q) for v,c,q in vols if c["type"]=="FUT"][:6]
-        top_opts=[(v,c,q) for v,c,q in vols if c["type"] in ("CE","PE")][:TOP_N]
-        top=top_futs+top_opts
-        entries=[]
-        for v,c,q in top:
-            quotes[str(c["tok"])]=q; entries.append(c)
-        token_map[cat]=entries
-        nf=sum(1 for e in entries if e["type"]=="FUT")
-        no=len(entries)-nf
-        print(f"[rank] {cat}: kept {nf} FUT + {no} options", file=sys.stderr, flush=True)
+        futs=[c for c in conts if c["type"]=="FUT"]
+        opts=[c for c in conts if c["type"] in ("CE","PE")]
+        token_map[cat]=futs+opts
+        nf=len(futs); no=len(opts)
+        print(f"[result] {cat}: {nf} FUT + {no} options = {nf+no} tokens", file=sys.stderr, flush=True)
 
-    # ── Diagnostic: capture one full quote for field reference ────────────────
+    # ── Diagnostic ────────────────────────────────────────────────────────────
     diag={}
     _first=None
     for cat,entries in token_map.items():
@@ -324,7 +305,10 @@ def main():
     if _first:
         q=quotes.get(str(_first["tok"]),{})
         diag["quote_keys"]=str(list(q.keys()))
-        diag["sample"]=f"{_first['sym']} vol={_vol_of(q)} ltp={q.get('ltp')}"
+        diag["sample"]=f"{_first['sym']} ltp={q.get('ltp')}"
+
+    total=sum(len(v) for v in token_map.values())
+    print(f"[done] total {total} tokens, {len(quotes)} quotes", file=sys.stderr, flush=True)
 
     result={"session":session,"token_map":token_map,"quotes":quotes,"diag":diag,"ck":ck}
     print(json.dumps(result))
