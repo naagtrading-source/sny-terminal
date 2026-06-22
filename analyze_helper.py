@@ -107,6 +107,12 @@ def main():
                 if v:
                     try: sk = float(v); break
                     except: pass
+            if not sk or sk <= 0:
+                # Fallback: extract digits before CE/PE in symbol
+                m = re.search(r'(\d+)(CE|PE)$', s.upper())
+                if m:
+                    try: sk = float(m.group(1))
+                    except: pass
 
         contracts.append({"tok":tok,"seg":seg,"sym":s,"type":ctype,"strike":int(sk)})
 
@@ -168,7 +174,8 @@ def main():
             })
         except: pass
 
-    # Sort by volume (highest first)
+    # Sort by volume, remove dead contracts (no volume = no activity)
+    results = [r for r in results if r["volume"] > 0 or r["ltp"] > 0]
     results.sort(key=lambda r: r["volume"], reverse=True)
 
     print(json.dumps({
