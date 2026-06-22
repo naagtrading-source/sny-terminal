@@ -125,7 +125,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v22-oi-sanity"
+CONFIG_VERSION = "v23-analyzer"
 
 def get_auth():
     """
@@ -588,3 +588,72 @@ def live_section():
 
 live_section()
 st.caption("Auto-updates every 60s")
+
+# ══ CUSTOM SYMBOL ANALYZER ════════════════════════════════════════════════════
+st.markdown("---")
+st.markdown("### 🔍 Analyze Any Symbol")
+
+c1, c2, c3 = st.columns([3, 2, 1])
+with c1:
+    analyze_sym = st.text_input("Symbol", placeholder="e.g. TATAMOTORS, GOLD, BAJFINANCE", key="analyze_sym")
+with c2:
+    analyze_exch = st.selectbox("Exchange", ["nse_fo", "mcx_fo"], format_func=lambda x: "NSE F&O" if x=="nse_fo" else "MCX", key="analyze_exch")
+with c3:
+    st.markdown(""); st.markdown("")  # align button
+    analyze_btn = st.button("Analyze", type="primary", key="analyze_btn")
+
+if analyze_btn and analyze_sym:
+    with st.spinner(f"Fetching {analyze_sym.upper()} data... (login + quotes, ~60s)"):
+        try:
+            proc = subprocess.run(
+                [sys.executable, "analyze_helper.py"],
+                input=json.dumps({"symbol": analyze_sym, "exchange": analyze_exch}),
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                data = json.loads(proc.stdout.strip())
+                if "error" in data:
+                    st.error(f"⚠️ {data['error']}")
+                else:
+                    st.success(f"**{data['symbol']}** on {'NSE' if 'nse' in data['exchange'] else 'MCX'} "
+                               f"· Underlying ₹{data['underlying']:,.1f} "
+                               f"· {data['total_contracts']} contracts found · {data['analyzed']} analyzed")
+
+                    results = data.get("results", [])
+                    if results:
+                        st.dataframe(pd.DataFrame([{
+                            "Contract": r["contract"],
+                            "Type": r["type"],
+                            "Strike": r["strike"] if r["strike"] != "-" else "—",
+                            "LTP": f"₹{r['ltp']:,}",
+                            "Volume": f"{r['volume']:,}",
+                            "OI": f"{r['oi']:,}",
+                            "Change": f"{r['change']:+.1f} ({r['pct_change']:+.1f}%)",
+                            "LTQ": f"{r['ltq']:,}",
+                            "Buy Qty": f"{r['buy_qty']:,}",
+                            "Sell Qty": f"{r['sell_qty']:,}",
+                            "Flow": r["side"],
+                        } for r in results]), width="stretch", hide_index=True, height=500)
+
+                        # Quick analysis summary
+                        top_vol = results[0]
+                        total_buy = sum(r["buy_qty"] for r in results)
+                        total_sell = sum(r["sell_qty"] for r in results)
+                        max_oi = max(results, key=lambda r: r["oi"])
+
+                        st.markdown("**Quick Analysis:**")
+                        overall = "🟢 BUY-dominated" if total_buy > total_sell*1.2 else "🔴 SELL-dominated" if total_sell > total_buy*1.2 else "⚪ Balanced"
+                        st.markdown(f"- Overall flow: **{overall}** (Buy {total_buy:,} vs Sell {total_sell:,})")
+                        st.markdown(f"- Highest volume: **{top_vol['contract']}** ({top_vol['volume']:,} contracts)")
+                        st.markdown(f"- Highest OI: **{max_oi['contract']}** ({max_oi['oi']:,})")
+                    else:
+                        st.warning("No quoted contracts found. The symbol might not have active F&O trading.")
+            else:
+                st.error(f"Analysis failed: {proc.stderr[-200:]}")
+        except subprocess.TimeoutExpired:
+            st.error("Analysis timed out (120s). Try again or use a simpler symbol.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+elif analyze_btn:
+    st.warning("Enter a symbol to analyze.")
