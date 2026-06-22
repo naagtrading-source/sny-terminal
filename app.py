@@ -339,14 +339,16 @@ def detect_blocks():
             has_history = len(h) >= MIN_HISTORY  # don't flag on first few ticks
             # OI sanity: changes > 50% in one tick are comparison artifacts, not real
             oi_sane = abs(oi_pct) < 50
+            # Skip if nothing actually traded since last tick
+            prev_ltq = prev.get("ltq", 0)
 
             if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
                 is_unusual = True
                 flags.append(f"Vol {vol_jump/avg:.1f}× normal")
-            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
+            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump > 0:
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
-            if ltq >= lot * BIG_TRADE_LOTS and ltq > 0:
+            if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
                 is_unusual = True
                 flags.append(f"Block {ltq:,}")
 
@@ -387,7 +389,7 @@ def detect_blocks():
                 is_unusual = True
                 flags.append(f"{acc_emoji} {acc_dist} (flat price + {vol_mult:.1f}× vol + OI{oi_pct:+.0f}%)")
 
-            st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp}
+            st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp,"ltq":ltq}
 
             # Show every contract that has real volume (it's a LIST).
             # Skip only dead/no-volume contracts.
