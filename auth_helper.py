@@ -82,7 +82,7 @@ def _parse_exp(item):
     return None
 
 SYMBOLS = {
-    "nse_fo": ["NIFTY","BANKNIFTY"],
+    "nse_fo": ["NIFTY","BANKNIFTY","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "mcx_fo": ["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 STEPS = {
@@ -177,13 +177,19 @@ def main():
                 except: pass
         return 0
 
-    candidates={"Index":[], "Commodity":[]}
-    cat_of={"nse_fo":"Index", "mcx_fo":"Commodity"}
+    # Category mapping: must match app.py's CATEGORIES exactly
+    STOCK_SYMS={"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"}
+    INDEX_SYMS={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
+    def _cat_for(sym):
+        if sym in STOCK_SYMS: return "Stock"
+        if sym in INDEX_SYMS: return "Index"
+        return "Commodity"
+    candidates={"Index":[], "Stock":[], "Commodity":[]}
 
     for seg,symbols in SYMBOLS.items():
         if seg in ("nse_fo","nse_cm") and not _nse: continue
         if seg=="mcx_fo" and not _mcx: continue
-        cat=cat_of.get(seg,"Index")
+        cat=_cat_for(symbol)
         for symbol in symbols:
             try:
                 r=_silent(lambda s=seg,sym=symbol: api.search_scrip(exchange_segment=s,symbol=sym))
