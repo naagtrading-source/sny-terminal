@@ -625,7 +625,7 @@ if analyze_btn and analyze_sym:
                         st.dataframe(pd.DataFrame([{
                             "Contract": r["contract"],
                             "Type": r["type"],
-                            "Strike": r["strike"] if r["strike"] != "-" else "—",
+                            "Strike": str(r["strike"]) if r["strike"] and r["strike"] not in ("-", 0, "0") else "—",
                             "LTP": f"₹{r['ltp']:,}",
                             "Volume": f"{r['volume']:,}",
                             "OI": f"{r['oi']:,}",
