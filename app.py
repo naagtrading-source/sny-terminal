@@ -125,7 +125,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v21-fast-auth"
+CONFIG_VERSION = "v22-oi-sanity"
 
 def get_auth():
     """
@@ -337,8 +337,8 @@ def detect_blocks():
             # ── Flags for "unusual" — need MIN_HISTORY ticks before flagging ────
             flags = []
             has_history = len(h) >= MIN_HISTORY  # don't flag on first few ticks
-            # OI sanity: changes > 500% are likely comparison artifacts, not real
-            oi_sane = abs(oi_pct) < 500
+            # OI sanity: changes > 50% in one tick are comparison artifacts, not real
+            oi_sane = abs(oi_pct) < 50
 
             if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
                 is_unusual = True
