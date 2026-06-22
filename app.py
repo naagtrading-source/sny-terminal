@@ -51,12 +51,13 @@ LOTS = {
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
-# Thresholds — only UNUSUAL activity (not regular liquidity)
-VOL_SPIKE_MULT = 3.0       # volume jump must be > 3x this contract's own average
-MIN_VOL_JUMP   = 10000     # ignore jumps under 10k contracts
-LARGE_VALUE_CR = 2.0       # value of jump must exceed Rs 2 crore
-OI_CHANGE_PCT  = 8.0       # OI change > 8% = real new positions
+# Thresholds — ONLY institutional-level activity (very high bar)
+VOL_SPIKE_MULT = 5.0       # volume jump must be > 5x this contract's own average
+MIN_VOL_JUMP   = 50000     # ignore jumps under 50k (institutional = large)
+LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
+OI_CHANGE_PCT  = 15.0      # OI change > 15% = significant new institutional positions
 BIG_TRADE_LOTS = 50        # single trade >= 50 lots = block print
+MIN_HISTORY    = 3         # need at least 3 ticks of history before flagging unusual
 
 def interpret_activity(opt_type, oi_change, price_change):
     """
@@ -124,7 +125,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v19-stocks-options"
+CONFIG_VERSION = "v20-institutional"
 
 def get_auth():
     """
@@ -333,12 +334,16 @@ def detect_blocks():
             sq = int(_f(q.get("total_sell", 0) or 0))
             pressure = "BUY-led" if bq > sq*1.2 else "SELL-led" if sq > bq*1.2 else "balanced"
 
-            # ── Flags for "unusual" (highlighted, but ALL high-vol shown) ─────
+            # ── Flags for "unusual" — need MIN_HISTORY ticks before flagging ────
             flags = []
-            if avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
+            has_history = len(h) >= MIN_HISTORY  # don't flag on first few ticks
+            # OI sanity: changes > 500% are likely comparison artifacts, not real
+            oi_sane = abs(oi_pct) < 500
+
+            if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
                 is_unusual = True
                 flags.append(f"Vol {vol_jump/avg:.1f}× normal")
-            if abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
+            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0:
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             if ltq >= lot * BIG_TRADE_LOTS and ltq > 0:
