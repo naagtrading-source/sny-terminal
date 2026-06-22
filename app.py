@@ -125,7 +125,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v20-institutional"
+CONFIG_VERSION = "v21-fast-auth"
 
 def get_auth():
     """
@@ -472,7 +472,7 @@ def _refresh_quotes_bg(holder, toks):
         proc = subprocess.run(
             [sys.executable, "quote_helper.py"],
             input=json.dumps(toks), capture_output=True, text=True,
-            timeout=60, env={**os.environ, "PYTHONUNBUFFERED":"1"},
+            timeout=120, env={**os.environ, "PYTHONUNBUFFERED":"1"},
         )
         if proc.returncode==0 and proc.stdout.strip():
             data=json.loads(proc.stdout.strip())
