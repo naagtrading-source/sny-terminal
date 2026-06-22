@@ -43,6 +43,7 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── Config ─────────────────────────────────────────────────────────────────────
 CATEGORIES = {
     "Index":    ["NIFTY","BANKNIFTY"],
+    "Stock":    ["RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "Commodity":["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 LOTS = {
@@ -123,7 +124,7 @@ def _run_auth_bg(holder):
     holder["ts"]=time.time()
     gc.collect()
 
-CONFIG_VERSION = "v18-clean-layout"
+CONFIG_VERSION = "v19-stocks-options"
 
 def get_auth():
     """
@@ -575,8 +576,9 @@ def live_section():
             else:
                 st.caption("No unusual activity yet — only very large/unusual volume events appear here.")
 
-    tab_nse, tab_mcx = st.tabs(["📈 NSE","🛢️ Commodities"])
+    tab_nse, tab_stk, tab_mcx = st.tabs(["📈 NSE Index","📊 Stocks","🛢️ Commodities"])
     with tab_nse:  _render_tab("Index")
+    with tab_stk:  _render_tab("Stock")
     with tab_mcx:  _render_tab("Commodity")
 
 live_section()
