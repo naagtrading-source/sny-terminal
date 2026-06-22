@@ -153,72 +153,69 @@ def main():
                     session[f"apikey_{kk}"]=str(kv)
     except: pass
 
-    # ══ VOLUME-FIRST SCAN — FUTs first, then options near ATM ══════════════════
-    # ROOT CAUSE OF OLD BUG: FUTs and options share one expiry pool.
-    # MCX options have WEEKLY expiries, FUTs have MONTHLY. Mixing them in
-    # keep_exps[:2] picks 2 weekly dates, dropping everything else.
-    # FIX: collect FUTs unconditionally (there are few), then options separately
-    # with their OWN nearest expiry, capped to prevent API call explosion.
-
-    import datetime as _dt, pytz as _pytz
+    # ══ SCAN: collect FUTs + options, volume-rank, keep top per category ═════
+    import datetime as _dt, pytz as _pytz, time as _time
     _now=_dt.datetime.now(_pytz.timezone("Asia/Kolkata")); _wd=_now.weekday()
     _nse=(_now.replace(hour=9,minute=15,second=0)<=_now<=_now.replace(hour=15,minute=30,second=0)) and _wd<5
     _mcx=((_wd<5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=23,minute=30,second=0)) or \
          ((_wd==5) and _now.replace(hour=9,minute=0,second=0)<=_now<=_now.replace(hour=14,minute=0,second=0))
 
-    TOP_N = 20          # keep this many highest-volume contracts per category
-    OPTS_PER_SYM = 12   # max option candidates per symbol before volume-ranking
+    TOP_N = 20
+    OPTS_PER_SYM = 12
 
     def _vol_of(q):
-        for k in ("last_volume","volume","vol","volume_traded"):
+        for k in ("last_volume","volume","vol"):
             v=q.get(k)
             if v not in (None,""):
                 try: return int(_f(v))
                 except: pass
         return 0
 
-    # Category mapping: must match app.py's CATEGORIES exactly
-    STOCK_SYMS={"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"}
-    INDEX_SYMS={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
-    def _cat_for(sym):
-        if sym in STOCK_SYMS: return "Stock"
-        if sym in INDEX_SYMS: return "Index"
-        return "Commodity"
+    # Category mapping matching app.py
+    STOCK_SET={"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"}
+    INDEX_SET={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
+    def _cat(s): return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
+
     candidates={"Index":[], "Stock":[], "Commodity":[]}
 
     for seg,symbols in SYMBOLS.items():
         if seg in ("nse_fo","nse_cm") and not _nse: continue
         if seg=="mcx_fo" and not _mcx: continue
-        cat=_cat_for(symbol)
         for symbol in symbols:
+            cat=_cat(symbol)   # INSIDE the loop (was outside = bug)
             try:
                 r=_silent(lambda s=seg,sym=symbol: api.search_scrip(exchange_segment=s,symbol=sym))
                 raw=r.get("data",[]) or r.get("result",[]) if isinstance(r,dict) else (r if isinstance(r,list) else [])
             except Exception as ex:
                 raw=[]
-                print(f"[scrip] {symbol}/{seg} err: {ex}", file=sys.stderr, flush=True)
+                print(f"[scrip] {symbol}/{seg} search err: {ex}", file=sys.stderr, flush=True)
             print(f"[scrip] {symbol}/{seg}: {len(raw)} records", file=sys.stderr, flush=True)
 
-            # ── PASS 1: Collect ALL FUTs (no expiry filter — only ~2-3 exist) ──
-            futs_found = []
+            # Dump ONE sample non-FUT record so we can see the actual field names
             for item in raw:
                 s=_sym(item)
-                if not _matches(s, symbol): continue
-                if "FUT" not in s: continue
-                ep=_parse_exp(item); tok=_tok(item)
-                if not tok: continue
-                futs_found.append({"tok":tok,"seg":seg,"sym":s,"type":"FUT",
-                                   "strike":None,"expiry":ep or "?","symbol":symbol})
-            # Keep nearest 2 FUTs by expiry
-            futs_found.sort(key=lambda x: x["expiry"])
-            for f in futs_found[:2]:
-                candidates[cat].append(f)
+                if _matches(s,symbol) and "FUT" not in s.upper():
+                    print(f"[sample] {symbol} option: {json.dumps({k:str(v)[:40] for k,v in item.items()},default=str)}", file=sys.stderr, flush=True)
+                    break
 
-            # Get FUT underlying price for ATM strike selection
-            und = 0.0
-            if futs_found:
+            # ── Collect FUTs (unconditionally — only 2-3 exist per symbol) ────
+            futs=[]
+            for item in raw:
+                s=_sym(item)
+                if not _matches(s,symbol): continue
+                if "FUT" not in s.upper(): continue
+                tok=_tok(item)
+                if not tok: continue
+                ep=_parse_exp(item)
+                futs.append({"tok":tok,"seg":seg,"sym":s,"type":"FUT","strike":None,"expiry":ep or "?","symbol":symbol})
+            futs.sort(key=lambda x: x["expiry"])
+            for f in futs[:2]: candidates[cat].append(f)
+
+            # Get underlying price from nearest FUT
+            und=0.0
+            if futs:
                 try:
-                    qr=_silent(lambda f=futs_found[0]: api.quotes(
+                    qr=_silent(lambda f=futs[0]: api.quotes(
                         instrument_tokens=[{"instrument_token":str(f["tok"]),"exchange_segment":f["seg"]}],
                         quote_type=None))
                     q=_extract_quote(qr)
@@ -230,29 +227,26 @@ def main():
                                 if fv>0: und=fv; break
                             except: pass
                 except: pass
-            print(f"[scan] {symbol}: {len(futs_found)} FUTs, underlying=₹{und}", file=sys.stderr, flush=True)
+            print(f"[scan] {symbol}: {len(futs)} FUTs, und=₹{und}", file=sys.stderr, flush=True)
 
-            # ── PASS 2: Collect options — own expiry tracking, near ATM ────────
-            # First: gather all option records with their parsed data
-            all_opts = []
-            n_matched=0; n_exp=0; n_type=0; n_strike=0
+            # ── Collect options — parse from SYMBOL STRING (most reliable) ────
+            # Don't rely on separate fields — parse CE/PE and strike from symbol
+            all_opts=[]
             for item in raw:
-                s=_sym(item)
-                if not _matches(s, symbol): continue
+                s=_sym(item).upper()
+                if not _matches(s,symbol): continue
                 if "FUT" in s: continue
-                n_matched+=1
-                ep=_parse_exp(item)
-                if not ep:
-                    n_exp+=1; continue
-                # Detect option type from pOptionType OR from the symbol suffix
-                raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
-                opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
+                tok=_tok(item)
+                if not tok: continue
+                # Parse option type: check symbol ending first, then field
+                opt=None
+                if s.endswith("CE"): opt="CE"
+                elif s.endswith("PE"): opt="PE"
                 if not opt:
-                    # Try parsing from symbol: ends with CE or PE
-                    if s.upper().endswith("CE"): opt="CE"
-                    elif s.upper().endswith("PE"): opt="PE"
-                if not opt:
-                    n_type+=1; continue
+                    raw_opt=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
+                    opt="CE" if raw_opt in("CE","CALL","C") else "PE" if raw_opt in("PE","PUT","P") else None
+                if not opt: continue
+                # Parse strike: from field first, fallback to symbol regex
                 sk=None
                 for k in ("pStrikePrice","strkPrc","strikePrice"):
                     v=item.get(k)
@@ -261,56 +255,46 @@ def main():
                         except: pass
                         break
                 if not sk or sk<=0:
-                    # Try extracting strike from symbol (digits before CE/PE)
-                    # re already imported at module level
-                    m=re.search(r'(\d+)(CE|PE)$', s.upper())
+                    m=re.search(r"(\d+)(CE|PE)$", s)
                     if m:
                         try: sk=float(m.group(1))
                         except: pass
-                if not sk or sk<=0:
-                    n_strike+=1; continue
-                tok=_tok(item)
-                if not tok: continue
-                all_opts.append({"tok":tok,"seg":seg,"sym":s,"type":opt,
-                                 "strike":int(sk),"expiry":ep,"symbol":symbol,"_sk":sk})
+                if not sk or sk>0:
+                    if sk is None: sk=0
+                    ep=_parse_exp(item)
+                    all_opts.append({"tok":tok,"seg":seg,"sym":_sym(item),"type":opt,
+                                     "strike":int(sk) if sk else 0,"expiry":ep or "?",
+                                     "symbol":symbol,"_sk":sk or 0})
 
-            print(f"[scan] {symbol}: {n_matched} non-FUT matched, {len(all_opts)} options parsed "
-                  f"(dropped: {n_exp} no-exp, {n_type} no-type, {n_strike} no-strike)",
-                  file=sys.stderr, flush=True)
+            print(f"[scan] {symbol}: {len(all_opts)} options parsed", file=sys.stderr, flush=True)
 
             if all_opts:
-                # Option-specific nearest expiry (separate from FUT expiries!)
-                opt_exps = sorted(set(o["expiry"] for o in all_opts))
-                keep_opt_exps = set(opt_exps[:2])  # nearest 2 OPTION expiries
-                all_opts = [o for o in all_opts if o["expiry"] in keep_opt_exps]
-                print(f"[scan] {symbol}: option expiries kept={keep_opt_exps}, {len(all_opts)} after exp filter",
-                      file=sys.stderr, flush=True)
-
-                # Near ATM: if we have underlying, keep strikes closest to it
-                if und > 0 and len(all_opts) > OPTS_PER_SYM:
-                    all_opts.sort(key=lambda o: abs(o["_sk"] - und))
-                    all_opts = all_opts[:OPTS_PER_SYM]
-
+                # Keep only nearest 2 option expiries
+                opt_exps=sorted(set(o["expiry"] for o in all_opts if o["expiry"]!="?"))
+                if opt_exps:
+                    keep=set(opt_exps[:2])
+                    all_opts=[o for o in all_opts if o["expiry"] in keep or o["expiry"]=="?"]
+                    print(f"[scan] {symbol}: kept expiries {keep}, {len(all_opts)} after filter", file=sys.stderr, flush=True)
+                # Near ATM: keep strikes closest to underlying
+                if und>0 and len(all_opts)>OPTS_PER_SYM:
+                    all_opts.sort(key=lambda o: abs(o["_sk"]-und) if o["_sk"] else 999999)
+                    all_opts=all_opts[:OPTS_PER_SYM]
                 for o in all_opts:
-                    del o["_sk"]
+                    o.pop("_sk",None)
                     candidates[cat].append(o)
 
             del raw; gc.collect()
 
-    # ── Batch-fetch volume for ALL candidates, then rank ──────────────────────
-    quotes={}
-    token_map={}   # category → top contracts (with quotes attached via quotes dict)
-
-    import time as _time
-    scan_start=_time.time()
-    SCAN_BUDGET=120   # seconds max for the whole volume-ranking pass
+    # ── Volume-rank candidates, keep top per category ─────────────────────────
+    quotes={}; token_map={}
+    scan_start=_time.time(); SCAN_BUDGET=180
 
     for cat,conts in candidates.items():
-        print(f"[scan] {cat}: {len(conts)} candidate contracts", file=sys.stderr, flush=True)
-        vols=[]   # (volume, contract, quote)
+        print(f"[rank] {cat}: {len(conts)} candidates", file=sys.stderr, flush=True)
+        vols=[]
         for c in conts:
             if _time.time()-scan_start > SCAN_BUDGET:
-                print(f"[scan] {cat}: time budget hit, ranking {len(vols)} so far", file=sys.stderr, flush=True)
+                print(f"[rank] {cat}: budget hit after {len(vols)}", file=sys.stderr, flush=True)
                 break
             try:
                 qr=_silent(lambda c=c: api.quotes(
@@ -318,25 +302,19 @@ def main():
                     quote_type=None))
                 q=_extract_quote(qr)
                 v=_vol_of(q)
-                if v>0:
-                    vols.append((v,c,q))
-            except Exception as ex:
-                pass
-        # Rank by volume — keep top FUTs AND top options separately
-        # (so high-volume FUTs don't crowd out the option strikes you want)
+                if v>0: vols.append((v,c,q))
+            except: pass
         vols.sort(key=lambda x:x[0], reverse=True)
-        futs = [(v,c,q) for v,c,q in vols if c["type"]=="FUT"][:6]
-        opts = [(v,c,q) for v,c,q in vols if c["type"] in ("CE","PE")][:TOP_N]
-        top = futs + opts
+        top_futs=[(v,c,q) for v,c,q in vols if c["type"]=="FUT"][:6]
+        top_opts=[(v,c,q) for v,c,q in vols if c["type"] in ("CE","PE")][:TOP_N]
+        top=top_futs+top_opts
         entries=[]
         for v,c,q in top:
-            quotes[str(c["tok"])]=q
-            entries.append(c)
+            quotes[str(c["tok"])]=q; entries.append(c)
         token_map[cat]=entries
-        n_fut=sum(1 for e in entries if e["type"]=="FUT")
-        n_opt=len(entries)-n_fut
-        print(f"[scan] {cat}: kept {n_fut} FUT + {n_opt} options by volume",
-              file=sys.stderr, flush=True)
+        nf=sum(1 for e in entries if e["type"]=="FUT")
+        no=len(entries)-nf
+        print(f"[rank] {cat}: kept {nf} FUT + {no} options", file=sys.stderr, flush=True)
 
     # ── Diagnostic: capture one full quote for field reference ────────────────
     diag={}
