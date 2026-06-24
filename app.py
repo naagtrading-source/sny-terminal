@@ -9,8 +9,50 @@ Main process stays light (~120MB) using only requests for live quotes.
 import streamlit as st
 import pandas as pd
 import os, json, re, subprocess, sys, gc, time
+import requests as _req
 from datetime import datetime
 from collections import defaultdict
+
+# ── Telegram alerts ───────────────────────────────────────────────────────────
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+def send_telegram(block):
+    """Send an unusual activity alert to Telegram."""
+    if not TG_TOKEN or not TG_CHAT: return
+    try:
+        # Build clean contract label
+        if block["type"] == "FUT":
+            label = f"{block['symbol']} FUT"
+        else:
+            label = f"{block['symbol']} {block['strike']} {block['type']}"
+
+        emoji = block.get("emoji", "")
+        activity = block.get("activity", "")
+        bias = block.get("bias", "")
+        acc = block.get("acc_dist", "")
+
+        lines = [
+            f"{emoji} *{activity}* — {label}",
+            f"₹{block['ltp']:,}  (Δ{block.get('price_chg',0):+.1f})",
+            f"Vol: {block['total_vol']:,}  (Δ{block['vol_jump']:+,})",
+        ]
+        if block.get('vol_mult', 0) > 0:
+            lines.append(f"Vol vs Avg: {block['vol_mult']:.1f}×")
+        lines.append(f"OI Δ: {block['oi_chg_pct']:+.0f}%")
+        lines.append(f"Side: {block.get('side_emoji','')} {block.get('side','')}")
+        if acc:
+            lines.append(f"🔇 {block.get('acc_emoji','')} {acc}")
+        lines.append(f"Signal: {block.get('reasons','')}")
+        lines.append(f"⏰ {block['time']}")
+
+        msg = "\n".join(lines)
+        _req.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "Markdown"},
+            timeout=5,
+        )
+    except: pass  # don't let Telegram errors break the app
 
 # Import external packages separately so a missing one is obvious
 try:
@@ -520,6 +562,8 @@ def live_section():
             slog = strike_log.setdefault(skey, [])
             slog.insert(0, b)
             del slog[30:]
+            # Send to Telegram
+            send_telegram(b)
 
         qage = int(time.time()-_quote_holder()["ts"]) if _quote_holder()["ts"] else -1
         st.caption(f"Monitoring {sum(len(v) for v in token_map.values())} contracts | "
