@@ -180,8 +180,6 @@ def main():
     all_fut_quotes={}  # accumulate FUT quotes for output
 
     for seg,symbols in SYMBOLS.items():
-        if seg in ("nse_fo","nse_cm") and not _nse: continue
-        if seg=="mcx_fo" and not _mcx: continue
         for symbol in symbols:
             cat=_cat(symbol)   # INSIDE the loop (was outside = bug)
             try:
