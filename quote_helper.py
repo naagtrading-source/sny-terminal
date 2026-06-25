@@ -6,7 +6,7 @@ This keeps quotes live-updating without re-running the heavy token discovery.
 """
 import os, sys, json, io, contextlib, threading
 
-def _silent(fn, timeout=30):
+def _silent(fn, timeout=5):
     r=[None]; e=[None]
     def w():
         buf=io.StringIO()

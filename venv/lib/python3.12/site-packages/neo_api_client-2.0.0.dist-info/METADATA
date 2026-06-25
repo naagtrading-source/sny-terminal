@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: neo-api-client
+Version: 2.0.0
+Summary: Neo Trade API
+Home-page: 
+Author: ne API
+Author-email: 
+Keywords: Neo-Trade API,Neo Trade API's
+Requires-Dist: bidict==0.22.1
+Requires-Dist: certifi==2022.12.7
+Requires-Dist: idna==2.10
+Requires-Dist: numpy==2.1.0
+Requires-Dist: pyjsparser==2.7.1
+Requires-Dist: PyJWT==2.6.0
+Requires-Dist: python-dateutil==2.8.2
+Requires-Dist: python-dotenv==1.0.0
+Requires-Dist: requests==2.32.3
+Requires-Dist: six==1.16.0
+Requires-Dist: urllib3==1.26.14
+Requires-Dist: websocket-client==1.8.0
+Requires-Dist: websockets==8.1
+Requires-Dist: pandas==2.2.3
+Requires-Dist: asyncio==3.4.3
+Dynamic: author
+Dynamic: description
+Dynamic: keywords
+Dynamic: requires-dist
+Dynamic: summary
+
+    
