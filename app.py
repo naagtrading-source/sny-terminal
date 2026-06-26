@@ -326,6 +326,7 @@ def _persistent_store():
     return {"prev": defaultdict(dict), "volhist": defaultdict(list), "feed": [], "snapshot": []}
 
 _STORE = _persistent_store()
+_TG_SENT = {}  # {skey: last_sent_timestamp}
 # Mirror into session_state keys for compatibility with existing code
 st.session_state["prev"]    = _STORE["prev"]
 st.session_state["volhist"] = _STORE["volhist"]
