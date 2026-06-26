@@ -33,19 +33,18 @@ def send_telegram(block):
         acc = block.get("acc_dist", "")
 
         lines = [
-            f"{emoji} *{activity}* — {label}",
-            f"₹{block['ltp']:,}  (Δ{block.get('price_chg',0):+.1f})",
-            f"Vol: {block['total_vol']:,}  (Δ{block['vol_jump']:+,})",
+            f"{emoji} *{activity}*",
+            f"━━━━━━━━━━━━━━━",
+            f"📌 {label}",
+            f"💰 ₹{block['ltp']:,}  (Δ{block.get('price_chg',0):+.1f})",
+            f"📊 Vol: {block['total_vol']:,}  ({block.get('vol_mult',0):.1f}× avg)",
+            f"📈 OI: {block['oi_chg_pct']:+.0f}%",
+            f"{block.get('side_emoji','🔴')} Side: {block.get('side','')}",
         ]
-        if block.get('vol_mult', 0) > 0:
-            lines.append(f"Vol vs Avg: {block['vol_mult']:.1f}×")
-        lines.append(f"OI Δ: {block['oi_chg_pct']:+.0f}%")
-        lines.append(f"Side: {block.get('side_emoji','')} {block.get('side','')}")
         if acc:
-            lines.append(f"🔇 {block.get('acc_emoji','')} {acc}")
-        lines.append(f"Signal: {block.get('reasons','')}")
-        lines.append(f"⏰ {block['time']}")
-
+            lines.append(f"🔔 {block.get('acc_emoji','')} {acc}")
+        lines.append(f"━━━━━━━━━━━━━━━")
+        lines.append(f"🕐 {block['time']} IST")
         msg = "\n".join(lines)
         _req.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -84,17 +83,18 @@ IST = pytz.timezone("Asia/Kolkata")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CATEGORIES = {
-    "Index":    ["NIFTY","BANKNIFTY"],
+    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX"],
     "Stock":    ["RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "Commodity":["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 LOTS = {
-    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,
+    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,"SENSEX":10,
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
 # Thresholds — ONLY institutional-level activity (very high bar)
-VOL_SPIKE_MULT = 5.0       # volume jump must be > 5x this contract's own average
+VOL_SPIKE_MULT = 10.0
+COMM_SPIKE_MULT = 5.0       # volume jump must be > 5x this contract's own average
 MIN_VOL_JUMP   = 50000     # ignore jumps under 50k (institutional = large)
 LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 15.0      # OI change > 15% = significant new institutional positions
@@ -148,7 +148,7 @@ def _run_auth_bg(holder):
         env = {**os.environ, "PYTHONUNBUFFERED":"1"}
         proc = subprocess.run(
             [sys.executable, "auth_helper.py"],
-            capture_output=True, text=True, timeout=240, env=env,
+            capture_output=True, text=True, timeout=360, env=env,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             holder["result"]=(None,{},{},{"stderr":proc.stderr[-800:]},f"auth failed: {proc.stderr[-200:]}")
@@ -181,9 +181,10 @@ def get_auth():
     # If done and fresh (within 20 min), return result immediately
     if holder["done"] and holder["result"] and holder["ts"] > 0:
         age = time.time() - holder["ts"]
-        if age < 1200:
+        session = holder["result"][0] if isinstance(holder["result"], tuple) else None
+        if age < 14400 and session:  # 4 hour session cache
             return holder["result"]
-        # Expired — reset for fresh auth
+        # Expired or failed — reset for fresh auth
         holder["done"] = False
         holder["result"] = None
         holder["thread"] = None
@@ -233,7 +234,7 @@ def fetch_quotes_fast():
             [sys.executable, "quote_helper.py"],
             input=json.dumps(toks),
             capture_output=True, text=True,
-            timeout=40, env={**os.environ, "PYTHONUNBUFFERED":"1"},
+            timeout=120, env={**os.environ, "PYTHONUNBUFFERED":"1"},
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             return {}
@@ -384,10 +385,10 @@ def detect_blocks():
             # Skip if nothing actually traded since last tick
             prev_ltq = prev.get("ltq", 0)
 
-            if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * VOL_SPIKE_MULT:
+            if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"Vol {vol_jump/avg:.1f}× normal")
-            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump > 0:
+            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
@@ -482,6 +483,7 @@ with c2: st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
 with c3: st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
 with c4: st.metric("IST",now.strftime("%H:%M:%S"))
 
+
 with st.expander("🔧 Diagnostic", expanded=False):
     # App is private (only invited viewers), so diagnostic shows directly.
     for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
@@ -528,6 +530,40 @@ def _refresh_quotes_bg(holder, toks):
     gc.collect()
 
 @st.fragment(run_every=60 if (nse_l or mcx_l) else None)
+
+def _render_crypto_tab():
+    from crypto_helper import detect_spikes
+    crypto_prev  = _STORE.setdefault("crypto_prev", {})
+    crypto_hist  = _STORE.setdefault("crypto_hist", {})
+    crypto_log   = _STORE.setdefault("crypto_log", {})
+
+    results, crypto_prev, crypto_hist = detect_spikes(crypto_prev, crypto_hist)
+    _STORE["crypto_prev"] = crypto_prev
+    _STORE["crypto_hist"] = crypto_hist
+
+    for r in results:
+        skey = r["symbol"]
+        slog = crypto_log.setdefault(skey, [])
+        if not slog or slog[0].get("vol") != r.get("vol"):
+            slog.insert(0, r)
+            del slog[30:]
+
+    hits = {k:v for k,v in crypto_log.items() if v}
+    if not hits:
+        st.caption("No crypto volume spikes yet — watching for 3x normal volume.")
+        return
+
+    for sym, rows in sorted(hits.items(), key=lambda x: x[1][0]["vol_mult"], reverse=True):
+        latest = rows[0]
+        st.markdown(f"**{sym}** · ${latest['ltp']:,.4f} · {len(rows)} events")
+        st.dataframe([{
+            "Time": r["time"],
+            "Vol Jump": round(r["vol_jump"],2),
+            "×Avg": f"{r['vol_mult']}×",
+            "Price": f"${r['ltp']:,.4f}",
+            "Trades": r["trades"],
+        } for r in rows], use_container_width=True, hide_index=True)
+
 def live_section():
     global sdk_quotes, token_map
     try:
@@ -560,9 +596,9 @@ def live_section():
         for b in unusual:
             skey = f"{b['symbol']}|{b['type']}|{b['strike']}"
             slog = strike_log.setdefault(skey, [])
-            slog.insert(0, b)
-            del slog[30:]
-            # Send to Telegram
+            if not slog or slog[0].get("total_vol") != b.get("total_vol"):
+                slog.insert(0, b)
+                del slog[30:]
             send_telegram(b)
 
         qage = int(time.time()-_quote_holder()["ts"]) if _quote_holder()["ts"] else -1
@@ -627,10 +663,29 @@ def live_section():
             else:
                 st.caption("No unusual activity yet — only very large/unusual volume events appear here.")
 
-    tab_nse, tab_stk, tab_mcx = st.tabs(["📈 NSE Index","📊 Stocks","🛢️ Commodities"])
-    with tab_nse:  _render_tab("Index")
-    with tab_stk:  _render_tab("Stock")
-    with tab_mcx:  _render_tab("Commodity")
+    def _render_global():
+        from global_helper import get_global_quotes
+        quotes = get_global_quotes()
+        if not quotes:
+            st.info("Loading global markets...")
+            return
+        for q in quotes:
+            chg = q.get("change", 0)
+            chg_pct = q.get("change_pct", 0)
+            color = "#00c853" if chg >= 0 else "#ff1744"
+            arrow = "\u25b2" if chg >= 0 else "\u25bc"
+            st.markdown(f"""<div style='background:#161b22;border-radius:8px;padding:10px 16px;margin-bottom:6px;font-family:monospace'>
+<span style='color:#8b949e'>{q["label"]}</span>&nbsp;&nbsp;
+<span style='color:#e6edf3;font-size:1.1em'>${q["price"]:,.4f}</span>&nbsp;&nbsp;
+<span style='color:{color}'>{arrow} {chg:+.4f} ({chg_pct:+.3f}%)</span>&nbsp;&nbsp;
+<span style='color:#484f58;font-size:0.8em'>{q.get("ts","")}</span>
+</div>""", unsafe_allow_html=True)
+
+    tab_nse, tab_stk, tab_mcx, tab_crypto = st.tabs(["\U0001f4c8 NSE Index","\U0001f4ca Stocks","\U0001f6e2 Commodities","\U0001fa99 Crypto"])
+    with tab_nse: _render_tab("Index")
+    with tab_stk: _render_tab("Stock")
+    with tab_mcx: _render_tab("Commodity")
+    with tab_crypto: _render_crypto_tab()
 
 live_section()
 st.caption("Auto-updates every 60s")

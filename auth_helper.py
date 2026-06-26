@@ -70,23 +70,31 @@ def _parse_exp(item):
                 if d>=today: return str(d)
             except: pass
     s=_sym(item)
-    m=re.search(r'(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})',s)
+    m=re.search(r'(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})',s)
     if m:
-        day,mon,yr=m.groups(); yi=int(yr) if len(yr)==4 else 2000+int(yr)
-        import datetime
-        try:
-            d=datetime.datetime.strptime(f"{int(day):02d}{mon}{yi}","%d%b%Y").date()
-            import pytz
-            if d>=datetime.datetime.now(pytz.timezone("Asia/Kolkata")).date(): return str(d)
-        except: pass
+        day,mon,yr=m.groups(); yi=2000+int(yr)
+        import datetime as _dt, pytz, calendar
+        mons=["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
+        mo=mons.index(mon)+1; today=_dt.datetime.now(pytz.timezone("Asia/Kolkata")).date()
+        if int(day) in range(1,29):
+            # MCX style: day embedded in symbol
+            try:
+                d=_dt.date(yi,mo,int(day))
+                if d>=today: return str(d)
+            except: pass
+        # NSE style: last thursday of month
+        last_day=calendar.monthrange(yi,mo)[1]
+        d=_dt.date(yi,mo,last_day)
+        while d.weekday()!=3: d-=_dt.timedelta(days=1)
+        if d>=today: return str(d)
     return None
 
 SYMBOLS = {
-    "nse_fo": ["NIFTY","BANKNIFTY","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
+    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "mcx_fo": ["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 STEPS = {
-    "NIFTY":50,"BANKNIFTY":100,"FINNIFTY":50,"MIDCPNIFTY":25,
+    "NIFTY":50,"BANKNIFTY":100,"FINNIFTY":50,"MIDCPNIFTY":25,"SENSEX":10,
     "RELIANCE":50,"HDFCBANK":20,"TCS":100,"INFY":50,"ICICIBANK":20,"SBIN":10,
     "GOLDM":100,"SILVERM":1000,"CRUDEOIL":100,"NATURALGAS":10,"COPPER":5,
 }
@@ -100,16 +108,17 @@ def main():
     secret=os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
     ucc=os.environ.get("KOTAK_UCC","").strip()
     mpin=os.environ.get("KOTAK_MPIN","").strip()
-    mob=os.environ.get("KOTAK_MOBILE","").strip().lstrip("+").replace(" ","").replace("-","")
+    mob=os.environ.get("KOTAK_MOBILE","").strip().replace(" ","").replace("-","")
     if mob.startswith("91") and len(mob)==12: mob=mob[2:]
     elif mob.startswith("0") and len(mob)==11: mob=mob[1:]
     padded=secret+"="*(-len(secret)%8)
     try: totp=pyotp.TOTP(padded).now()
     except: totp=pyotp.TOTP(secret).now()
 
-    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck))
+    nfk=os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
+    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk))
     logged_in=False
-    for mfmt in [f"+91{mob}",mob,f"91{mob}"]:
+    for mfmt in [mob]:
         r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
         if isinstance(r1,dict) and not r1.get("error"):
             logged_in=True; break
@@ -173,7 +182,7 @@ def main():
 
     # Category mapping matching app.py
     STOCK_SET={"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"}
-    INDEX_SET={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
+    INDEX_SET={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX"}
     def _cat(s): return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
 
     candidates={"Index":[], "Stock":[], "Commodity":[]}
