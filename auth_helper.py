@@ -109,7 +109,8 @@ def main():
     ucc=os.environ.get("KOTAK_UCC","").strip()
     mpin=os.environ.get("KOTAK_MPIN","").strip()
     mob=os.environ.get("KOTAK_MOBILE","").strip().replace(" ","").replace("-","")
-    if mob.startswith("91") and len(mob)==12: mob=mob[2:]
+    if mob.startswith("+91"): mob=mob[3:]
+    elif mob.startswith("91") and len(mob)==12: mob=mob[2:]
     elif mob.startswith("0") and len(mob)==11: mob=mob[1:]
     padded=secret+"="*(-len(secret)%8)
     try: totp=pyotp.TOTP(padded).now()
@@ -118,7 +119,7 @@ def main():
     nfk=os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
     api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk))
     logged_in=False
-    for mfmt in [mob]:
+    for mfmt in [f"+91{mob}", mob, f"91{mob}"]:
         r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
         if isinstance(r1,dict) and not r1.get("error"):
             logged_in=True; break
