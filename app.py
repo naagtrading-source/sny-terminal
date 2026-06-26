@@ -550,7 +550,7 @@ def _render_crypto_tab():
 
     hits = {k:v for k,v in crypto_log.items() if v}
     if not hits:
-        st.caption("No crypto volume spikes yet — watching for 50x normal volume.")
+        st.caption("No crypto volume spikes yet — watching for 3x normal volume.")
         return
 
     for sym, rows in sorted(hits.items(), key=lambda x: x[1][0]["vol_mult"], reverse=True):
