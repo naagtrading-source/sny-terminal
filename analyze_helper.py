@@ -45,7 +45,11 @@ def main():
     import pyotp
 
     ck   = os.environ["KOTAK_CONSUMER_KEY"]
-    mob  = os.environ.get("KOTAK_MOBILE","").lstrip("+").lstrip("91")[-10:]
+    mob  = os.environ.get("KOTAK_MOBILE","").strip().replace(" ","").replace("-","")
+    if mob.startswith("+91"): mob = mob[3:]
+    elif mob.startswith("91") and len(mob)==12: mob = mob[2:]
+    elif mob.startswith("0"): mob = mob[1:]
+    mob = mob[-10:]
     ucc  = os.environ.get("KOTAK_UCC","")
     mpin = os.environ.get("KOTAK_MPIN","")
     totp = pyotp.TOTP(os.environ["KOTAK_TOTP_SECRET"]).now()
