@@ -90,11 +90,11 @@ def _parse_exp(item):
     return None
 
 SYMBOLS = {
-    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
+    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "mcx_fo": ["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 STEPS = {
-    "NIFTY":50,"BANKNIFTY":100,"FINNIFTY":50,"MIDCPNIFTY":25,"SENSEX":10,
+    "NIFTY":50,"BANKNIFTY":100,"FINNIFTY":50,"MIDCPNIFTY":25,
     "RELIANCE":50,"HDFCBANK":20,"TCS":100,"INFY":50,"ICICIBANK":20,"SBIN":10,
     "GOLDM":100,"SILVERM":1000,"CRUDEOIL":100,"NATURALGAS":10,"COPPER":5,
 }
@@ -183,7 +183,7 @@ def main():
 
     # Category mapping matching app.py
     STOCK_SET={"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"}
-    INDEX_SET={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX"}
+    INDEX_SET={"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
     def _cat(s): return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
 
     candidates={"Index":[], "Stock":[], "Commodity":[]}

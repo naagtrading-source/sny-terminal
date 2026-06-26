@@ -83,12 +83,12 @@ IST = pytz.timezone("Asia/Kolkata")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CATEGORIES = {
-    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX"],
+    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"],
     "Stock":    ["RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "Commodity":["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 LOTS = {
-    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,"SENSEX":10,
+    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
