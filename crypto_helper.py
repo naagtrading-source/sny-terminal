@@ -1,103 +1,74 @@
 """
-crypto_helper.py — CoinGecko volume spike detector
+crypto_helper.py — OKX per-minute volume spike detector.
+Uses 1-minute candles (real per-interval volume, not 24h cumulative).
 No API key needed. Works from Indian IPs.
 """
 import requests, time
 
-# CoinGecko coin IDs mapped to display symbols
-COINS = {
-    "bitcoin":"BTCUSDT","ethereum":"ETHUSDT","binancecoin":"BNBUSDT",
-    "solana":"SOLUSDT","ripple":"XRPUSDT","dogecoin":"DOGEUSDT",
-    "cardano":"ADAUSDT","tron":"TRXUSDT","avalanche-2":"AVAXUSDT",
-    "chainlink":"LINKUSDT","polkadot":"DOTUSDT","litecoin":"LTCUSDT",
-    "shiba-inu":"SHIBUSDT","uniswap":"UNIUSDT","cosmos":"ATOMUSDT",
-    "ethereum-classic":"ETCUSDT","stellar":"XLMUSDT","bitcoin-cash":"BCHUSDT",
-    "aptos":"APTUSDT","filecoin":"FILUSDT","arbitrum":"ARBUSDT",
-    "near":"NEARUSDT","optimism":"OPUSDT","injective-protocol":"INJUSDT",
-    "thorchain":"RUNEUSDT","fetch-ai":"FETUSDT","sui":"SUIUSDT",
-    "celestia":"TIAUSDT","sei-network":"SEIUSDT","worldcoin-wld":"WLDUSDT",
-    "jupiter-exchange-solana":"JUPUSDT","stacks":"STXUSDT","aave":"AAVEUSDT",
-    "maker":"MKRUSDT","havven":"SNXUSDT","compound-governance-token":"COMPUSDT",
-    "curve-dao-token":"CRVUSDT","lido-dao":"LDOUSDT","render-token":"RNDRUSDT",
-    "the-graph":"GRTUSDT","apecoin":"APEUSDT","the-sandbox":"SANDUSDT",
-    "decentraland":"MANAUSDT","axie-infinity":"AXSUSDT","vechain":"VETUSDT",
-    "internet-computer":"ICPUSDT","algorand":"ALGOUSDT","elrond-erd-2":"EGLDUSDT",
-    "tezos":"XTZUSDT","theta-token":"THETAUSDT","eos":"EOSUSDT",
-    "hedera-hashgraph":"HBARUSDT","dydx":"DYDXUSDT","gmx":"GMXUSDT",
-    "magic":"MAGICUSDT","pendle":"PENDLEUSDT","zcash":"ZECUSDT",
-    "dash":"DASHUSDT","neo":"NEOUSDT","icon":"ICXUSDT",
-}
+SYMBOLS = [
+    "BTC-USDT","ETH-USDT","SOL-USDT","XRP-USDT","DOGE-USDT",
+    "BNB-USDT","ADA-USDT","AVAX-USDT","LINK-USDT","DOT-USDT",
+    "TRX-USDT","LTC-USDT","BCH-USDT","UNI-USDT","ATOM-USDT",
+    "ETC-USDT","XLM-USDT","APT-USDT","FIL-USDT","ARB-USDT",
+    "NEAR-USDT","OP-USDT","INJ-USDT","SUI-USDT","TIA-USDT",
+    "SEI-USDT","WLD-USDT","AAVE-USDT","MKR-USDT","CRV-USDT",
+    "LDO-USDT","GRT-USDT","SAND-USDT","MANA-USDT","AXS-USDT",
+    "ICP-USDT","ALGO-USDT","XTZ-USDT","EOS-USDT","HBAR-USDT",
+    "DYDX-USDT","GMX-USDT","PENDLE-USDT","ZEC-USDT","DASH-USDT",
+    "NEO-USDT","JUP-USDT","FET-USDT","RUNE-USDT","STX-USDT",
+]
 
 VOL_SPIKE_MULT = 3.0
-MIN_HISTORY    = 3
+MIN_HISTORY    = 5
 
-def fetch_markets():
-    """Fetch market data for all coins in one API call."""
+def fetch_candles(inst, limit=20):
     try:
-        ids = ",".join(COINS.keys())
         r = requests.get(
-            "https://api.coingecko.com/api/v3/coins/markets",
-            params={
-                "vs_currency": "usd",
-                "ids": ids,
-                "order": "market_cap_desc",
-                "per_page": 250,
-                "page": 1,
-                "sparkline": False,
-            },
-            timeout=15,
+            "https://www.okx.com/api/v5/market/candles",
+            params={"instId": inst, "bar": "1m", "limit": limit},
+            timeout=6,
         )
-        return {d["id"]: d for d in r.json()}
-    except Exception as e:
-        return {}
+        d = r.json()
+        if d.get("code") != "0":
+            return []
+        rows = d.get("data", [])
+        out = []
+        for c in reversed(rows):
+            close = float(c[4])
+            qvol  = float(c[7])
+            confirmed = (c[8] == "1") if len(c) > 8 else True
+            out.append((close, qvol, confirmed))
+        return out
+    except:
+        return []
 
 def detect_spikes(prev_state, vol_hist):
     results = []
     now = time.strftime("%H:%M:%S")
-
-    markets = fetch_markets()
-    if not markets:
-        return results, prev_state, vol_hist
-
-    for coin_id, sym in COINS.items():
-        d = markets.get(coin_id)
-        if not d:
+    for inst in SYMBOLS:
+        candles = fetch_candles(inst, limit=20)
+        confirmed = [c for c in candles if c[2]]
+        if len(confirmed) < MIN_HISTORY + 1:
+            time.sleep(0.05)
             continue
-
-        vol   = float(d.get("total_volume") or 0)   # 24hr USD volume
-        ltp   = float(d.get("current_price") or 0)
-
-        if vol <= 0 or ltp <= 0:
-            continue
-
-        h = vol_hist.setdefault(sym, [])
-        h.append(vol)
-        if len(h) > 30:
-            h.pop(0)
-
-        if len(h) < MIN_HISTORY:
-            prev_state[sym] = {"vol": vol, "ltp": ltp}
-            continue
-
-        # Compare current volume vs average of previous readings
-        avg = sum(h[:-1]) / len(h[:-1])
+        history = confirmed[:-1]
+        latest  = confirmed[-1]
+        hist_vols = [c[1] for c in history]
+        ltp     = latest[0]
+        cur_vol = latest[1]
+        avg = sum(hist_vols[-15:]) / len(hist_vols[-15:])
         if avg <= 0:
+            time.sleep(0.05)
             continue
-
-        vol_mult = vol / avg
-        vol_jump = vol - avg
-
-        if vol_mult >= VOL_SPIKE_MULT and vol_jump > 0:
+        vol_mult = cur_vol / avg
+        sym = inst.replace("-", "")
+        if vol_mult >= VOL_SPIKE_MULT:
             results.append({
-                "time":     now,
-                "symbol":   sym,
-                "ltp":      ltp,
-                "vol":      round(vol, 2),
-                "vol_jump": round(vol_jump, 2),
-                "vol_mult": round(vol_mult, 1),
-                "trades":   0,
+                "time": now, "symbol": sym, "ltp": ltp,
+                "vol": round(cur_vol, 2),
+                "vol_jump": round(cur_vol - avg, 2),
+                "vol_mult": round(vol_mult, 1), "trades": 0,
             })
-
-        prev_state[sym] = {"vol": vol, "ltp": ltp}
-
+        prev_state[sym] = {"vol": cur_vol, "ltp": ltp}
+        time.sleep(0.05)
     return results, prev_state, vol_hist
