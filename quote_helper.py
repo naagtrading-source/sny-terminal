@@ -49,10 +49,12 @@ def main():
     ucc  = os.environ.get("KOTAK_UCC","")
     mpin = os.environ.get("KOTAK_MPIN","")
     import pyotp
-    totp = pyotp.TOTP(os.environ["KOTAK_TOTP_SECRET"]).now()
+    _sec = os.environ["KOTAK_TOTP_SECRET"].replace(" ","")
+    _sec = _sec + "="*(-len(_sec)%8)
+    totp = pyotp.TOTP(_sec).now()
 
     nfk=os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
-    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk))
+    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk) if nfk else NeoAPI(environment="prod",consumer_key=ck))
     ok=False
     for mfmt in [f"+91{mob}",mob,f"91{mob}"]:
         r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))

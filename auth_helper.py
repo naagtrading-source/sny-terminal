@@ -60,7 +60,7 @@ def _matches(trd, target):
 def _parse_exp(item):
     import datetime, pytz
     today=datetime.datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    for k in ("pExpDate","expiry","expiryDate","expDate"):
+    for k in ("pExpiryDate","pExpDate","expiry","expiryDate","expDate"):
         v=item.get(k)
         if not v: continue
         s=str(v).strip().upper()
@@ -117,9 +117,9 @@ def main():
     except: totp=pyotp.TOTP(secret).now()
 
     nfk=os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
-    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk))
+    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk) if nfk else NeoAPI(environment="prod",consumer_key=ck))
     logged_in=False
-    for mfmt in [f"+91{mob}", mob, f"91{mob}"]:
+    for mfmt in [f"+91{mob}"]:
         r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
         if isinstance(r1,dict) and not r1.get("error"):
             logged_in=True; break
