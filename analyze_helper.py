@@ -1,33 +1,8 @@
 """
-analyze_helper.py — Single-symbol analyzer subprocess.
-Takes a symbol + exchange from stdin, logs in, fetches all contracts,
-quotes for FUT + top options, returns detailed analysis JSON.
+analyze_helper.py — Dhan-based single-symbol analyzer.
 """
-import os, sys, json, io, contextlib, threading, re, gc
-
-def _silent(fn, timeout=25):
-    r=[None]; e=[None]
-    def w():
-        buf=io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                r[0]=fn()
-        except Exception as ex: e[0]=ex
-    t=threading.Thread(target=w,daemon=True); t.start(); t.join(timeout=timeout)
-    if e[0]: raise e[0]
-    return r[0]
-
-def _extract_quote(qr):
-    if qr is None: return {}
-    if isinstance(qr,list): return qr[0] if qr and isinstance(qr[0],dict) else {}
-    if isinstance(qr,dict):
-        for dk in ("data","Data","result","Result"):
-            if dk in qr:
-                inn=qr[dk]
-                if isinstance(inn,list) and inn: return inn[0] if isinstance(inn[0],dict) else {}
-                if isinstance(inn,dict): return inn
-        return qr
-    return {}
+import os, sys, json, re, csv, urllib.request, datetime
+import pytz
 
 def _f(v):
     try: return float(str(v).replace(",",""))
@@ -39,158 +14,100 @@ def main():
         print(json.dumps({"error":"no_input"})); return
     params = json.loads(raw_in)
     symbol = params["symbol"].upper().strip()
-    seg = params.get("exchange", "nse_fo")
+    seg    = params.get("exchange","nse_fo")
 
-    from neo_api_client import NeoAPI
-    import pyotp
-
-    ck   = os.environ["KOTAK_CONSUMER_KEY"]
-    mob  = os.environ.get("KOTAK_MOBILE","").strip().replace(" ","").replace("-","")
-    if mob.startswith("+91"): mob = mob[3:]
-    elif mob.startswith("91") and len(mob)==12: mob = mob[2:]
-    elif mob.startswith("0"): mob = mob[1:]
-    mob = mob[-10:]
-    ucc  = os.environ.get("KOTAK_UCC","")
-    mpin = os.environ.get("KOTAK_MPIN","")
-    _sec = os.environ["KOTAK_TOTP_SECRET"].replace(" ","")
-    _sec = _sec + "="*(-len(_sec)%8)
-    totp = pyotp.TOTP(_sec).now()
-
-    nfk = os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
-    api = _silent(lambda: NeoAPI(environment="prod", consumer_key=ck, neo_fin_key=nfk) if nfk else NeoAPI(environment="prod", consumer_key=ck))
-    ok = False
-    for mfmt in [f"+91{mob}", mob, f"91{mob}"]:
-        r1 = _silent(lambda m=mfmt: api.totp_login(mobile_number=m, ucc=ucc, totp=totp))
-        if isinstance(r1, dict) and not r1.get("error"):
-            ok = True; break
-    if not ok:
-        print(json.dumps({"error":"login_failed"})); return
-    _silent(lambda: api.totp_validate(mpin=mpin))
-
-    # Search scrip
     try:
-        r = _silent(lambda: api.search_scrip(exchange_segment=seg, symbol=symbol))
-        raw = r.get("data",[]) or r.get("result",[]) if isinstance(r,dict) else (r if isinstance(r,list) else [])
-    except:
-        raw = []
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    except Exception: pass
+    client_id    = os.environ["DHAN_CLIENT_ID"].strip()
+    access_token = os.environ["DHAN_ACCESS_TOKEN"].strip()
 
-    if not raw:
-        print(json.dumps({"error":f"No contracts found for {symbol} on {seg}","contracts":[]})); return
+    from dhanhq import DhanContext, dhanhq
+    ctx  = DhanContext(client_id, access_token)
+    dhan = dhanhq(ctx)
 
-    # Collect FUTs + options
-    def _sym(item): return str(item.get("pTrdSymbol",item.get("trdSym",item.get("symbol","")))).strip()
-    def _tok(item):
-        for k in ("pSymbol","token","instrument_token","pScripRefKey"):
-            v=item.get(k)
-            if v and str(v).strip(): return str(v).strip()
-        return None
-    def _matches(sym, target):
-        s=sym.upper(); t=target.upper()
-        if not s.startswith(t): return False
-        rest=s[len(t):]
-        return not rest or rest[0].isdigit()
+    dhan_seg = "NSE_FNO" if seg == "nse_fo" else "MCX"
+    exch     = "NSE" if seg == "nse_fo" else "MCX"
 
-    contracts = []
-    for item in raw:
-        s = _sym(item)
-        if not _matches(s, symbol): continue
-        tok = _tok(item)
-        if not tok: continue
+    url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        lines = resp.read().decode("utf-8").splitlines()
+    master = list(csv.DictReader(lines))
 
-        ctype = "FUT" if "FUT" in s.upper() else None
-        if not ctype:
-            if s.upper().endswith("CE"): ctype = "CE"
-            elif s.upper().endswith("PE"): ctype = "PE"
-            else:
-                raw_opt = str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
-                if raw_opt in ("CE","CALL","C"): ctype = "CE"
-                elif raw_opt in ("PE","PUT","P"): ctype = "PE"
-        if not ctype: continue
+    today = datetime.datetime.now(pytz.timezone("Asia/Kolkata")).date()
+    sym_rows = []
+    for row in master:
+        if row.get("SEM_EXM_EXCH_ID","") != exch: continue
+        tsym = row.get("SEM_TRADING_SYMBOL","")
+        if not (tsym.upper().startswith(symbol+"-") or tsym.upper().startswith(symbol+" ")): continue
+        try:
+            exp_d = datetime.datetime.strptime(row.get("SEM_EXPIRY_DATE","").strip()[:10], "%Y-%m-%d").date()
+            if exp_d < today: continue
+        except: pass
+        sym_rows.append(row)
 
-        sk = 0
-        if ctype != "FUT":
-            for k in ("pStrikePrice","strkPrc","strikePrice"):
-                v = item.get(k)
-                if v:
-                    try: sk = float(v); break
-                    except: pass
-            if not sk or sk <= 0:
-                # Fallback: extract digits before CE/PE in symbol
-                m = re.search(r'(\d+)(CE|PE)$', s.upper())
-                if m:
-                    try: sk = float(m.group(1))
-                    except: pass
+    if not sym_rows:
+        print(json.dumps({"error":f"No contracts for {symbol}","contracts":[]})); return
 
-        contracts.append({"tok":tok,"seg":seg,"sym":s,"type":ctype,"strike":int(sk)})
+    futs = sorted([r for r in sym_rows if "FUT" in r.get("SEM_INSTRUMENT_NAME","").upper()], key=lambda r: r.get("SEM_EXPIRY_DATE",""))
+    opts = [r for r in sym_rows if r.get("SEM_OPTION_TYPE","") in ("CE","PE")]
 
-    # Fetch quotes for FUTs + top 20 options by ATM proximity
-    futs = [c for c in contracts if c["type"]=="FUT"][:3]
-    opts = [c for c in contracts if c["type"] in ("CE","PE")]
-
-    # Get underlying from FUT
     und = 0.0
     results = []
-    for f in futs:
+
+    for r in futs[:3]:
+        sec_id = r["SEM_SMST_SECURITY_ID"]
+        tsym   = r["SEM_TRADING_SYMBOL"]
         try:
-            qr = _silent(lambda f=f: api.quotes(
-                instrument_tokens=[{"instrument_token":str(f["tok"]),"exchange_segment":f["seg"]}],
-                quote_type=None))
-            q = _extract_quote(qr)
-            ltp = _f(q.get("ltp",0))
-            vol = int(_f(q.get("last_volume",0)))
-            oi = int(_f(q.get("open_int",0)))
-            ltq = int(_f(q.get("last_traded_quantity",0)))
-            tb = int(_f(q.get("total_buy",0)))
-            ts_ = int(_f(q.get("total_sell",0)))
-            chg = _f(q.get("change",0))
-            pchg = _f(q.get("per_change",0))
+            qr    = dhan.get_quote_data(securities={dhan_seg: [int(sec_id)]})
+            qdata = qr.get("data",{}).get(dhan_seg,{}).get(str(sec_id), qr.get("data",{}).get(dhan_seg,{}).get(sec_id,{}))
+            ltp   = _f(qdata.get("last_price",0))
+            vol   = int(_f(qdata.get("volume",0)))
+            oi    = int(_f(qdata.get("oi",0)))
+            ltq   = int(_f(qdata.get("last_quantity",0)))
+            tb    = int(_f(qdata.get("buy_quantity",0)))
+            ts_   = int(_f(qdata.get("sell_quantity",0)))
+            chg   = _f(qdata.get("net_change",0))
+            pchg  = _f(qdata.get("percentage_change",0))
             if ltp > 0 and und == 0: und = ltp
-            side = "BUY-heavy" if tb > ts_*1.2 else "SELL-heavy" if ts_ > tb*1.2 else "balanced"
-            results.append({
-                "contract":f["sym"],"type":"FUT","strike":"-","ltp":ltp,
+            side  = "BUY-heavy" if tb > ts_*1.2 else "SELL-heavy" if ts_ > tb*1.2 else "balanced"
+            results.append({"contract":tsym,"type":"FUT","strike":"-","ltp":ltp,
                 "volume":vol,"oi":oi,"ltq":ltq,"change":chg,"pct_change":pchg,
-                "buy_qty":tb,"sell_qty":ts_,"side":side,
-            })
+                "buy_qty":tb,"sell_qty":ts_,"side":side})
         except: pass
 
-    # Sort options by ATM proximity, take top 20
     if und > 0:
-        opts.sort(key=lambda o: abs(o["strike"] - und) if o["strike"] else 999999)
+        opts.sort(key=lambda r: abs(float(r.get("SEM_STRIKE_PRICE",0))-und))
     opts = opts[:20]
 
-    for o in opts:
+    for r in opts:
+        sec_id = r["SEM_SMST_SECURITY_ID"]
+        tsym   = r["SEM_TRADING_SYMBOL"]
+        sk     = r.get("SEM_STRIKE_PRICE","0")
+        otype  = r.get("SEM_OPTION_TYPE","")
         try:
-            qr = _silent(lambda o=o: api.quotes(
-                instrument_tokens=[{"instrument_token":str(o["tok"]),"exchange_segment":o["seg"]}],
-                quote_type=None))
-            q = _extract_quote(qr)
-            ltp = _f(q.get("ltp",0))
-            vol = int(_f(q.get("last_volume",0)))
-            oi = int(_f(q.get("open_int",0)))
-            ltq = int(_f(q.get("last_traded_quantity",0)))
-            tb = int(_f(q.get("total_buy",0)))
-            ts_ = int(_f(q.get("total_sell",0)))
-            chg = _f(q.get("change",0))
-            pchg = _f(q.get("per_change",0))
-            side = "BUY-heavy" if tb > ts_*1.2 else "SELL-heavy" if ts_ > tb*1.2 else "balanced"
-            results.append({
-                "contract":o["sym"],"type":o["type"],"strike":o["strike"],
-                "ltp":ltp,"volume":vol,"oi":oi,"ltq":ltq,
-                "change":chg,"pct_change":pchg,
-                "buy_qty":tb,"sell_qty":ts_,"side":side,
-            })
+            qr    = dhan.get_quote_data(securities={dhan_seg: [int(sec_id)]})
+            qdata = qr.get("data",{}).get(dhan_seg,{}).get(str(sec_id), qr.get("data",{}).get(dhan_seg,{}).get(sec_id,{}))
+            ltp   = _f(qdata.get("last_price",0))
+            vol   = int(_f(qdata.get("volume",0)))
+            oi    = int(_f(qdata.get("oi",0)))
+            ltq   = int(_f(qdata.get("last_quantity",0)))
+            tb    = int(_f(qdata.get("buy_quantity",0)))
+            ts_   = int(_f(qdata.get("sell_quantity",0)))
+            chg   = _f(qdata.get("net_change",0))
+            pchg  = _f(qdata.get("percentage_change",0))
+            side  = "BUY-heavy" if tb > ts_*1.2 else "SELL-heavy" if ts_ > tb*1.2 else "balanced"
+            results.append({"contract":tsym,"type":otype,"strike":int(float(sk)) if sk else 0,
+                "ltp":ltp,"volume":vol,"oi":oi,"ltq":ltq,"change":chg,"pct_change":pchg,
+                "buy_qty":tb,"sell_qty":ts_,"side":side})
         except: pass
 
-    # Sort by volume, remove dead contracts (no volume = no activity)
     results = [r for r in results if r["volume"] > 0 or r["ltp"] > 0]
     results.sort(key=lambda r: r["volume"], reverse=True)
-
-    print(json.dumps({
-        "symbol":symbol,"exchange":seg,"underlying":und,
-        "total_contracts":len(contracts),"analyzed":len(results),
-        "results":results,
-    }))
+    print(json.dumps({"symbol":symbol,"exchange":seg,"underlying":und,
+        "total_contracts":len(sym_rows),"analyzed":len(results),"results":results}))
     sys.stdout.flush()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()

@@ -560,7 +560,7 @@ def _render_crypto_tab():
         st.dataframe([{
             "Time": r["time"],
             "Vol Jump": round(r["vol_jump"],2),
-            "×Avg": f"{r['vol_mult']}×",
+            "×Avg": f"{r['vol_mult']}×" + (" ⚡" if r.get('spike_type') == 'tick' else " 📊"),
             "Price": f"${r['ltp']:,.4f}",
             "Trades": r["trades"],
         } for r in rows], use_container_width=True, hide_index=True)
