@@ -60,7 +60,7 @@ def detect_spikes(prev_state, vol_hist):
         cur_vol   = latest[1]
 
         # --- tick spike: last 15 candles ---
-        avg15 = sum(hist_vols[-15:]) / len(hist_vols[-15:])
+        avg15 = sum(hist_vols[-15:]) / len(hist_vols[-15:]) if hist_vols else 0
         # --- rolling baseline: last 60 candles ---
         avg60 = sum(hist_vols[-60:]) / len(hist_vols[-60:]) if len(hist_vols) >= 60 else avg15
 
