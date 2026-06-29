@@ -337,6 +337,27 @@ def vh_avg(key):
     return sum(h[:-1])/len(h[:-1]) if len(h)>=3 else 0
 
 # ── INSTITUTIONAL ACTIVITY DETECTION ──────────────────────────────────────────
+def candle_spike(ikey, cat, inc, now):
+    """5m/15m: flag if current candle vol >= N x previous candle.
+    N = COMM_SPIKE_MULT for Commodity else VOL_SPIKE_MULT. Self-inits state."""
+    inc = inc if inc > 0 else 0
+    cs = st.session_state.setdefault("candle_vol", {})
+    s  = cs.setdefault(ikey, {})
+    mult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
+    out = []
+    for win, secs in (("5m", 300), ("15m", 900)):
+        b = int(now.timestamp() // secs) * secs
+        d = s.setdefault(win, {"b": b, "cur": 0.0, "prev": 0.0, "fired": None})
+        if b != d["b"]:
+            d["prev"] = d["cur"]; d["cur"] = 0.0; d["b"] = b; d["fired"] = None
+        d["cur"] += inc
+        prev = d["prev"]
+        if prev >= MIN_VOL_JUMP and d["cur"] >= prev * mult and d["fired"] != b:
+            d["fired"] = b
+            out.append(f"{win} candle {d['cur']/prev:.1f}x prev")
+    return out
+
+
 def detect_blocks():
     ts  = datetime.now(IST).strftime("%H:%M:%S")
     new = []
