@@ -27,7 +27,7 @@ def main():
     ctx  = DhanContext(client_id, access_token)
     dhan = dhanhq(ctx)
 
-    dhan_seg = "NSE_FNO" if seg == "nse_fo" else "MCX"
+    dhan_seg = "NSE_FNO" if seg == "nse_fo" else "MCX_COMM"
     exch     = "NSE" if seg == "nse_fo" else "MCX"
 
     url = "https://images.dhan.co/api-data/api-scrip-master.csv"

@@ -24,7 +24,7 @@ STEPS = {
     "GOLDM":100,"SILVERM":1000,"CRUDEOIL":100,"NATURALGAS":10,"COPPER":5,
 }
 OPTS_PER_SYM = 4
-SEG_MAP = {"nse_fo": "NSE_FNO", "mcx_fo": "MCX"}
+SEG_MAP = {"nse_fo": "NSE_FNO", "mcx_fo": "MCX_COMM"}
 
 def _cat(s):
     return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
