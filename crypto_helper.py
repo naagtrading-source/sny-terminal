@@ -18,7 +18,7 @@ SYMBOLS = [
     "NEO-USDT","JUP-USDT","FET-USDT","RUNE-USDT","STX-USDT",
 ]
 
-VOL_SPIKE_MULT      = 100.0   # tick spike: cur vs 15-candle avg
+VOL_SPIKE_MULT     = 100.0   # tick spike: cur vs 15-candle avg
 ROLLING_SPIKE_MULT  = 100.0   # baseline spike: cur vs 60-candle avg
 MIN_AVG_VOL         = 10.0   # ignore candles below this vol when computing avg
 MIN_HISTORY         = 5

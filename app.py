@@ -548,6 +548,23 @@ def _render_crypto_tab():
         if not slog or slog[0].get("vol") != r.get("vol"):
             slog.insert(0, r)
             del slog[30:]
+            try:
+                _stype = "⚡" if r.get("spike_type") == "tick" else "📊"
+                cmsg = "\n".join([
+                    f"{_stype} *CRYPTO VOLUME SPIKE*",
+                    "━━━━━━━━",
+                    f"🪙 {r['symbol']}",
+                    f"💵 ${r['ltp']:,.4f}",
+                    f"📊 Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}× avg)",
+                    f"🕐 {r['time']} IST",
+                ])
+                _req.post(
+                    f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                    json={"chat_id": TG_CHAT, "text": cmsg, "parse_mode": "Markdown"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
 
     hits = {k:v for k,v in crypto_log.items() if v}
     if not hits:
@@ -570,7 +587,7 @@ def live_section():
     try:
         _s,_tm,_q,_d,_e = get_auth()
         if _tm: token_map = _tm
-        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q
+        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q  # fallback only
     except: pass
 
     # ── Refresh quotes in background ──────────────────────────────────────────
