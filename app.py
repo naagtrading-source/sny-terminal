@@ -224,7 +224,7 @@ def fetch_quotes_fast():
     # Build token list from token_map
     toks=[]
     for sym,entries in token_map.items():
-        for e in entries:
+        for e in entries[:50]:
             if e.get("tok"):
                 toks.append({"tok":e["tok"],"seg":e["seg"]})
     if not toks:
@@ -577,8 +577,9 @@ def live_section():
     if token_map and (nse_l or mcx_l):
         toks=[]
         for cat,entries in token_map.items():
-            for e in entries:
+            for e in entries[:50]:
                 if e.get("tok"): toks.append({"tok":e["tok"],"seg":e["seg"]})
+        toks=toks[:1000]
         holder=_quote_holder()
         if holder["thread"] is None or not holder["thread"].is_alive():
             import threading
