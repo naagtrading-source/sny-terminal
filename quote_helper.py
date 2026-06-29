@@ -32,8 +32,8 @@ def main():
 
     quotes = {}
     try:
-        r = dhan.get_quote_data(securities=by_seg)
-        data = r.get("data", {})
+        r = dhan.quote_data(securities=by_seg)
+        data = r.get("data", {}).get("data", {})
         for seg_k, seg_data in data.items():
             for sid, qdata in seg_data.items():
                 quotes[str(sid)] = {
