@@ -221,10 +221,10 @@ def fetch_quotes_fast():
     """
     if not token_map:
         return {}
-    # Build token list from token_map
+    # Build token list from token_map — no cap; quote_helper batches internally
     toks=[]
     for sym,entries in token_map.items():
-        for e in entries[:50]:
+        for e in entries:
             if e.get("tok"):
                 toks.append({"tok":e["tok"],"seg":e["seg"]})
     if not toks:
@@ -266,7 +266,7 @@ def build_headers(session, ck):
         "neo-fin-key":   f"neotradeapi{sid}",
     }
 
-ck = (session or {}).get("ck", os.environ.get("KOTAK_CONSUMER_KEY",""))
+ck = (session or {}).get("ck", os.environ.get("KOTAT_CONSUMER_KEY",""))
 
 # ── Live quote from SDK-fetched quotes dict (passed by subprocess) ─────────────
 def live_quote(token, seg=None):
@@ -290,7 +290,7 @@ def _vol(q):
     if not isinstance(q,dict): return 0
     for k in ("last_volume","volume","vol","volume_traded","totalTradedVolume"):
         v=q.get(k)
-        if v not in (None,""): 
+        if v not in (None,""):
             try: return max(0,int(_f(v)))
             except: pass
     return 0
@@ -354,7 +354,7 @@ def candle_spike(ikey, cat, inc, now):
         prev = d["prev"]
         if prev >= MIN_VOL_JUMP and d["cur"] >= prev * mult and d["fired"] != b:
             d["fired"] = b
-            out.append(f"{win} candle {d['cur']/prev:.1f}x prev")
+            out.append(f"📊 {win} candle {d['cur']/prev:.1f}x prev")
     return out
 
 
@@ -376,14 +376,15 @@ def detect_blocks():
 
             ikey = f"{symbol}|{kind}|{sk}|{exp}"
             h = st.session_state["volhist"][ikey]
-            h.append(vol)
-            if len(h) > 15: h.pop(0)
 
             prev      = st.session_state["prev"].get(ikey, {})
             prev_vol  = prev.get("vol", vol)
             prev_oi   = prev.get("oi",  oi)
             prev_ltp  = prev.get("ltp", ltp)
             vol_jump  = vol - prev_vol
+            # FIX: store per-tick increment (not cumulative vol) so avg is meaningful
+            h.append(max(0, vol_jump))
+            if len(h) > 15: h.pop(0)
             avg       = vh_avg(ikey)
             oi_chg    = oi  - prev_oi
             oi_pct    = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
@@ -409,13 +410,19 @@ def detect_blocks():
 
             if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
-                flags.append(f"Vol {vol_jump/avg:.1f}× normal")
+                flags.append(f"⚡ Vol {vol_jump/avg:.1f}× normal")
             if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
                 is_unusual = True
                 flags.append(f"Block {ltq:,}")
+
+            # FIX: candle spike detection — 5m/15m volume vs previous candle
+            _cf = candle_spike(ikey, cat, vol_jump, datetime.now(IST))
+            if _cf:
+                is_unusual = True
+                flags += _cf
 
             value_cr = (vol * ltp) / 1e7   # total traded value (turnover)
             jump_cr  = (vol_jump * ltp) / 1e7
@@ -612,12 +619,12 @@ def live_section():
     except: pass
 
     # ── Refresh quotes in background ──────────────────────────────────────────
+    # FIX: no [:50] cap — quote_helper batches internally; send ALL tokens
     if token_map and (nse_l or mcx_l):
         toks=[]
         for cat,entries in token_map.items():
-            for e in entries[:50]:
+            for e in entries:
                 if e.get("tok"): toks.append({"tok":e["tok"],"seg":e["seg"]})
-        toks=toks[:1000]
         holder=_quote_holder()
         if holder["thread"] is None or not holder["thread"].is_alive():
             import threading
