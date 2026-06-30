@@ -33,25 +33,42 @@ def main():
     quotes = {}
     # Dhan limits: <=50 instruments per segment per call, <=1000 total.
     def _batches(bs):
-        segs = {k: list(v) for k, v in bs.items()}
-        while any(segs.values()):
-            batch = {}; total = 0
-            for k in list(segs.keys()):
-                if total >= 1000: break
-                take = segs[k][:50]
-                if not take: continue
-                room = min(50, 1000 - total)
-                take = take[:room]
-                if take:
-                    batch[k] = take
-                    segs[k] = segs[k][len(take):]
-                    total += len(take)
-            if not batch: break
-            yield batch
+        # One segment per batch — a failing segment (e.g. NSE when closed)
+        # must never knock out a live segment (MCX) sharing the same call.
+        for k, v in bs.items():
+            ids = list(v)
+            for i in range(0, len(ids), 50):
+                yield {k: ids[i:i+50]}
+
+    def _fetch(bseg, depth=0):
+        # Dhan fails an ENTIRE batch if any one security_id is bad/expired.
+        # On failure, bisect down to per-token so one bad ID drops only itself.
+        r = dhan.quote_data(securities=bseg)
+        ok = isinstance(r, dict) and r.get("status") == "success"
+        if ok:
+            return r
+        # split and retry
+        seg_k = next(iter(bseg))
+        ids = bseg[seg_k]
+        if len(ids) <= 1 or depth > 6:
+            return r  # single bad token (or too deep) — give up on it
+        mid = len(ids) // 2
+        merged = {"status": "success", "data": {"data": {}}}
+        for half in (ids[:mid], ids[mid:]):
+            if not half:
+                continue
+            rr = _fetch({seg_k: half}, depth + 1)
+            if isinstance(rr, dict) and rr.get("status") == "success":
+                inner = rr.get("data", {})
+                inner = inner.get("data", {}) if isinstance(inner, dict) else {}
+                if isinstance(inner, dict):
+                    for sk, sd in inner.items():
+                        merged["data"]["data"].setdefault(sk, {}).update(sd or {})
+        return merged
 
     for bseg in _batches(by_seg):
         try:
-            r = dhan.quote_data(securities=bseg)
+            r = _fetch(bseg)
             if not isinstance(r, dict):
                 continue
             data = r.get("data", {})
