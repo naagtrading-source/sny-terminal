@@ -124,6 +124,17 @@ def main():
 
     quotes = {}
     for cat, conts in candidates.items():
+        # Dedupe by security_id (globally unique on Dhan) — the same contract
+        # can be reached via overlapping symbol/expiry passes. Preserve order.
+        seen = set()
+        deduped = []
+        for c in conts:
+            k = str(c["tok"])
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped.append(c)
+        conts = deduped
         token_map[cat] = conts
         futs = [c for c in conts if c["type"] == "FUT"]
         if not futs: continue
