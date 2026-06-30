@@ -82,10 +82,11 @@ def main():
                     "type": "FUT", "strike": None, "expiry": exp, "symbol": symbol
                 })
 
+            # FIX: try multiple futs for underlying price (futs[0] may be illiquid on expiry day)
             und = 0.0
-            if futs:
+            for fr in futs[:3]:
                 try:
-                    sec_id = futs[0]["SEM_SMST_SECURITY_ID"]
+                    sec_id = fr["SEM_SMST_SECURITY_ID"]
                     r2 = dhan.ohlc_data(securities={dhan_seg: [int(sec_id)]})
                     inner = r2.get("data",{})
                     if isinstance(inner, dict) and "data" in inner:
@@ -96,6 +97,7 @@ def main():
                         if ltp > 0: und = ltp; break
                 except Exception as ex:
                     print(f"[ltp] {symbol} err: {ex}", file=sys.stderr)
+                if und > 0: break
 
             print(f"[scan] {symbol}: und=₹{und}", file=sys.stderr)
 
@@ -106,7 +108,8 @@ def main():
                 opts = [r for r in opts if r.get("SEM_EXPIRY_DATE","")[:10] in keep_exps]
                 if und > 0:
                     opts.sort(key=lambda r: abs(float(r.get("SEM_STRIKE_PRICE",0)) - und))
-                    opts = opts[:OPTS_PER_SYM]
+                # FIX: always cap options — outside the if und>0 block
+                opts = opts[:OPTS_PER_SYM]
                 for r in opts:
                     sec_id = r["SEM_SMST_SECURITY_ID"]
                     tsym   = r["SEM_TRADING_SYMBOL"]
