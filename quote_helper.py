@@ -1,82 +1,56 @@
 """
-quote_helper.py — FAST quote refresher subprocess.
-Reads a token list from stdin, logs in, fetches ONLY those quotes (no scrip
-search / no option discovery — that's the slow part), prints JSON, exits.
-This keeps quotes live-updating without re-running the heavy token discovery.
+quote_helper.py — Dhan-based fast quote refresher.
 """
-import os, sys, json, io, contextlib, threading
+import os, sys, json
 
-def _silent(fn, timeout=5):
-    r=[None]; e=[None]
-    def w():
-        buf=io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                r[0]=fn()
-        except Exception as ex: e[0]=ex
-    t=threading.Thread(target=w,daemon=True); t.start(); t.join(timeout=timeout)
-    if e[0]: raise e[0]
-    return r[0]
-
-def _extract_quote(qr):
-    if qr is None: return {}
-    if isinstance(qr,list): return qr[0] if qr and isinstance(qr[0],dict) else {}
-    if isinstance(qr,dict):
-        for dk in ("data","Data","result","Result"):
-            if dk in qr:
-                inn=qr[dk]
-                if isinstance(inn,list) and inn: return inn[0] if isinstance(inn[0],dict) else {}
-                if isinstance(inn,dict): return inn
-        return qr
-    return {}
+def _f(v):
+    try: return float(str(v).replace(",",""))
+    except: return 0.0
 
 def main():
-    raw_in=sys.stdin.read().strip()
+    raw_in = sys.stdin.read().strip()
     if not raw_in:
         print(json.dumps({"error":"no_input"})); return
-    tokens=json.loads(raw_in)   # [{"tok":"x","seg":"y"}, ...]
+    tokens = json.loads(raw_in)
     if not tokens:
         print(json.dumps({"error":"empty_tokens"})); return
 
-    from neo_api_client import NeoAPI
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    except Exception: pass
+    client_id    = os.environ["DHAN_CLIENT_ID"].strip()
+    access_token = os.environ["DHAN_ACCESS_TOKEN"].strip()
 
-    ck   = os.environ["KOTAK_CONSUMER_KEY"]
-    mob  = os.environ.get("KOTAK_MOBILE","").strip().replace(" ","").replace("-","")
-    if mob.startswith("+91"): mob = mob[3:]
-    elif mob.startswith("91") and len(mob)==12: mob = mob[2:]
-    elif mob.startswith("0"): mob = mob[1:]
-    mob = mob[-10:]
-    ucc  = os.environ.get("KOTAK_UCC","")
-    mpin = os.environ.get("KOTAK_MPIN","")
-    import pyotp
-    totp = pyotp.TOTP(os.environ["KOTAK_TOTP_SECRET"]).now()
+    from dhanhq import DhanContext, dhanhq
+    ctx  = DhanContext(client_id, access_token)
+    dhan = dhanhq(ctx)
 
-    nfk=os.environ.get("KOTAK_NEO_FIN_KEY","").strip()
-    api=_silent(lambda: NeoAPI(environment="prod",consumer_key=ck,neo_fin_key=nfk))
-    ok=False
-    for mfmt in [f"+91{mob}",mob,f"91{mob}"]:
-        r1=_silent(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
-        if isinstance(r1,dict) and not r1.get("error"):
-            ok=True; break
-    if not ok:
-        print(json.dumps({"error":"login_failed"})); return
-    _silent(lambda: api.totp_validate(mpin=mpin))
-
-    # Fetch quotes for the known tokens — batched where possible
-    quotes={}
+    by_seg = {}
     for t in tokens:
-        tk=str(t["tok"]); seg=t["seg"]
-        try:
-            qr=_silent(lambda tk=tk,seg=seg: api.quotes(
-                instrument_tokens=[{"instrument_token":tk,"exchange_segment":seg}],
-                quote_type=None))
-            q=_extract_quote(qr)
-            if q: quotes[tk]=q
-        except Exception:
-            pass
+        by_seg.setdefault(t["seg"],[]).append(int(t["tok"]))
 
-    print(json.dumps({"quotes":quotes}))
+    quotes = {}
+    try:
+        r = dhan.quote_data(securities=by_seg)
+        data = r.get("data", {}).get("data", {})
+        for seg_k, seg_data in data.items():
+            for sid, qdata in seg_data.items():
+                quotes[str(sid)] = {
+                    "ltp":                  _f(qdata.get("last_price", 0)),
+                    "last_volume":          int(_f(qdata.get("volume", 0))),
+                    "open_int":             int(_f(qdata.get("oi", 0))),
+                    "last_traded_quantity": int(_f(qdata.get("last_quantity", 0))),
+                    "total_buy":            int(_f(qdata.get("buy_quantity", 0))),
+                    "total_sell":           int(_f(qdata.get("sell_quantity", 0))),
+                    "change":               _f(qdata.get("net_change", 0)),
+                    "per_change":           _f(qdata.get("percentage_change", 0)),
+                }
+    except Exception as ex:
+        print(json.dumps({"error": str(ex)})); return
+
+    print(json.dumps({"quotes": quotes}))
     sys.stdout.flush()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()

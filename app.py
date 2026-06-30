@@ -83,12 +83,12 @@ IST = pytz.timezone("Asia/Kolkata")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CATEGORIES = {
-    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","SENSEX"],
+    "Index":    ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"],
     "Stock":    ["RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN"],
     "Commodity":["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
 LOTS = {
-    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,"SENSEX":10,
+    "NIFTY":75,"BANKNIFTY":30,"FINNIFTY":40,"MIDCPNIFTY":75,
     "RELIANCE":250,"HDFCBANK":550,"TCS":175,"INFY":400,"ICICIBANK":700,"SBIN":1500,
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
@@ -221,7 +221,7 @@ def fetch_quotes_fast():
     """
     if not token_map:
         return {}
-    # Build token list from token_map
+    # Build token list from token_map — no cap; quote_helper batches internally
     toks=[]
     for sym,entries in token_map.items():
         for e in entries:
@@ -266,7 +266,7 @@ def build_headers(session, ck):
         "neo-fin-key":   f"neotradeapi{sid}",
     }
 
-ck = (session or {}).get("ck", os.environ.get("KOTAK_CONSUMER_KEY",""))
+ck = (session or {}).get("ck", os.environ.get("KOTAT_CONSUMER_KEY",""))
 
 # ── Live quote from SDK-fetched quotes dict (passed by subprocess) ─────────────
 def live_quote(token, seg=None):
@@ -290,7 +290,7 @@ def _vol(q):
     if not isinstance(q,dict): return 0
     for k in ("last_volume","volume","vol","volume_traded","totalTradedVolume"):
         v=q.get(k)
-        if v not in (None,""): 
+        if v not in (None,""):
             try: return max(0,int(_f(v)))
             except: pass
     return 0
@@ -337,6 +337,27 @@ def vh_avg(key):
     return sum(h[:-1])/len(h[:-1]) if len(h)>=3 else 0
 
 # ── INSTITUTIONAL ACTIVITY DETECTION ──────────────────────────────────────────
+def candle_spike(ikey, cat, inc, now):
+    """5m/15m: flag if current candle vol >= N x previous candle.
+    N = COMM_SPIKE_MULT for Commodity else VOL_SPIKE_MULT. Self-inits state."""
+    inc = inc if inc > 0 else 0
+    cs = st.session_state.setdefault("candle_vol", {})
+    s  = cs.setdefault(ikey, {})
+    mult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
+    out = []
+    for win, secs in (("5m", 300), ("15m", 900)):
+        b = int(now.timestamp() // secs) * secs
+        d = s.setdefault(win, {"b": b, "cur": 0.0, "prev": 0.0, "fired": None})
+        if b != d["b"]:
+            d["prev"] = d["cur"]; d["cur"] = 0.0; d["b"] = b; d["fired"] = None
+        d["cur"] += inc
+        prev = d["prev"]
+        if prev >= MIN_VOL_JUMP and d["cur"] >= prev * mult and d["fired"] != b:
+            d["fired"] = b
+            out.append(f"📊 {win} candle {d['cur']/prev:.1f}x prev")
+    return out
+
+
 def detect_blocks():
     ts  = datetime.now(IST).strftime("%H:%M:%S")
     new = []
@@ -355,14 +376,15 @@ def detect_blocks():
 
             ikey = f"{symbol}|{kind}|{sk}|{exp}"
             h = st.session_state["volhist"][ikey]
-            h.append(vol)
-            if len(h) > 15: h.pop(0)
 
             prev      = st.session_state["prev"].get(ikey, {})
             prev_vol  = prev.get("vol", vol)
             prev_oi   = prev.get("oi",  oi)
             prev_ltp  = prev.get("ltp", ltp)
             vol_jump  = vol - prev_vol
+            # FIX: store per-tick increment (not cumulative vol) so avg is meaningful
+            h.append(max(0, vol_jump))
+            if len(h) > 15: h.pop(0)
             avg       = vh_avg(ikey)
             oi_chg    = oi  - prev_oi
             oi_pct    = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
@@ -388,13 +410,19 @@ def detect_blocks():
 
             if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
-                flags.append(f"Vol {vol_jump/avg:.1f}× normal")
+                flags.append(f"⚡ Vol {vol_jump/avg:.1f}× normal")
             if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
                 is_unusual = True
                 flags.append(f"Block {ltq:,}")
+
+            # FIX: candle spike detection — 5m/15m volume vs previous candle
+            _cf = candle_spike(ikey, cat, vol_jump, datetime.now(IST))
+            if _cf:
+                is_unusual = True
+                flags += _cf
 
             value_cr = (vol * ltp) / 1e7   # total traded value (turnover)
             jump_cr  = (vol_jump * ltp) / 1e7
@@ -548,6 +576,23 @@ def _render_crypto_tab():
         if not slog or slog[0].get("vol") != r.get("vol"):
             slog.insert(0, r)
             del slog[30:]
+            try:
+                _stype = "⚡" if r.get("spike_type") == "tick" else "📊"
+                cmsg = "\n".join([
+                    f"{_stype} *CRYPTO VOLUME SPIKE*",
+                    "━━━━━━━━",
+                    f"🪙 {r['symbol']}",
+                    f"💵 ${r['ltp']:,.4f}",
+                    f"📊 Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}× avg)",
+                    f"🕐 {r['time']} IST",
+                ])
+                _req.post(
+                    f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                    json={"chat_id": TG_CHAT, "text": cmsg, "parse_mode": "Markdown"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
 
     hits = {k:v for k,v in crypto_log.items() if v}
     if not hits:
@@ -560,7 +605,7 @@ def _render_crypto_tab():
         st.dataframe([{
             "Time": r["time"],
             "Vol Jump": round(r["vol_jump"],2),
-            "×Avg": f"{r['vol_mult']}×",
+            "×Avg": f"{r['vol_mult']}×" + (" ⚡" if r.get('spike_type') == 'tick' else " 📊"),
             "Price": f"${r['ltp']:,.4f}",
             "Trades": r["trades"],
         } for r in rows], use_container_width=True, hide_index=True)
@@ -570,10 +615,11 @@ def live_section():
     try:
         _s,_tm,_q,_d,_e = get_auth()
         if _tm: token_map = _tm
-        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q
+        if _q and not _quote_holder()["quotes"]: sdk_quotes = _q  # fallback only
     except: pass
 
     # ── Refresh quotes in background ──────────────────────────────────────────
+    # FIX: no [:50] cap — quote_helper batches internally; send ALL tokens
     if token_map and (nse_l or mcx_l):
         toks=[]
         for cat,entries in token_map.items():
