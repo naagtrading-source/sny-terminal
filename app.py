@@ -344,7 +344,7 @@ def candle_spike(ikey, cat, inc, now):
     cs = st.session_state.setdefault("candle_vol", {})
     s  = cs.setdefault(ikey, {})
     mult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
-    out = []
+    out = {}  # {"5m": 3.2, "15m": 0.0} — multiple of prev candle when fired, else 0
     for win, secs in (("5m", 300), ("15m", 900)):
         b = int(now.timestamp() // secs) * secs
         d = s.setdefault(win, {"b": b, "cur": 0.0, "prev": 0.0, "fired": None})
@@ -352,9 +352,10 @@ def candle_spike(ikey, cat, inc, now):
             d["prev"] = d["cur"]; d["cur"] = 0.0; d["b"] = b; d["fired"] = None
         d["cur"] += inc
         prev = d["prev"]
+        out[win] = 0.0
         if prev >= MIN_VOL_JUMP and d["cur"] >= prev * mult and d["fired"] != b:
             d["fired"] = b
-            out.append(f"📊 {win} candle {d['cur']/prev:.1f}x prev")
+            out[win] = round(d["cur"] / prev, 1)
     return out
 
 
@@ -420,9 +421,10 @@ def detect_blocks():
 
             # FIX: candle spike detection — 5m/15m volume vs previous candle
             _cf = candle_spike(ikey, cat, vol_jump, datetime.now(IST))
-            if _cf:
+            cs_5m  = _cf.get("5m", 0.0)
+            cs_15m = _cf.get("15m", 0.0)
+            if cs_5m or cs_15m:
                 is_unusual = True
-                flags += _cf
 
             value_cr = (vol * ltp) / 1e7   # total traded value (turnover)
             jump_cr  = (vol_jump * ltp) / 1e7
@@ -472,6 +474,7 @@ def detect_blocks():
                     "strike":str(sk) if sk else "FUT","type":kind,
                     "expiry":exp,"ltp":ltp,"vol_jump":vol_jump,
                     "total_vol":vol,"avg_vol":int(avg),"vol_mult":round(vol_mult,1),
+                    "cs_5m":cs_5m,"cs_15m":cs_15m,
                     "value_cr":round(value_cr,2),"jump_cr":round(jump_cr,2),
                     "ltq":ltq,"pressure":pressure,
                     "side":side,"side_emoji":side_emoji,
@@ -630,6 +633,9 @@ def live_section():
             import threading
             holder["thread"]=threading.Thread(target=_refresh_quotes_bg,args=(holder,toks),daemon=True)
             holder["thread"].start()
+        # Wait for first fetch so initial render has data
+        if not holder["quotes"] and holder["thread"] and holder["thread"].is_alive():
+            holder["thread"].join(timeout=15)
         if holder["quotes"]:
             sdk_quotes = holder["quotes"]
 
@@ -693,7 +699,9 @@ def live_section():
                     "Time": r["time"],
                     "Volume": f"{r['total_vol']:,}",
                     "Vol Δ": f"+{r['vol_jump']:,}" if r['vol_jump']>0 else f"{r['vol_jump']:,}",
-                    "×Avg": (f"{r.get('vol_mult',0):.1f}×" if r.get('vol_mult',0)>0 else ""),
+                    "×Avg": (f"{r.get('vol_mult',0):.1f}× ⚡" if r.get('vol_mult',0)>0 else ""),
+                    "5m": (f"{r.get('cs_5m',0):.1f}× 📊" if r.get('cs_5m',0)>0 else ""),
+                    "15m": (f"{r.get('cs_15m',0):.1f}× 📊" if r.get('cs_15m',0)>0 else ""),
                     "Buy/Sell": f"{r.get('side_emoji','')} {r.get('side','')}",
                     "LTP": f"₹{r['ltp']:,}",
                     "OI Δ%": f"{r['oi_chg_pct']:+.0f}%",
