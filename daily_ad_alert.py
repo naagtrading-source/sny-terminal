@@ -63,7 +63,15 @@ def main():
     except Exception:
         print("[ad-alert] auth scan parse failed", file=sys.stderr); return
     futs = []
-    for cat in ("Index", "Stock", "Commodity"):
+    # Only scan NSE index/stock futures while NSE is open (9:15-15:30 IST).
+    # After NSE close, alert on Commodity (MCX) only — runs till 23:30.
+    _ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    _now = datetime.datetime.now(_ist)
+    _nse_open = (_now.weekday() < 5
+                 and _now.replace(hour=9, minute=15, second=0, microsecond=0) <= _now
+                 <= _now.replace(hour=15, minute=30, second=0, microsecond=0))
+    _cats = ("Index", "Stock", "Commodity") if _nse_open else ("Commodity",)
+    for cat in _cats:
         for c in (tm.get(cat, []) or []):
             if c.get("type") == "FUT" and c.get("tok"):
                 futs.append({"tok": c["tok"], "seg": c.get("seg", "NSE_FNO"), "sym": c.get("sym", "?")})
