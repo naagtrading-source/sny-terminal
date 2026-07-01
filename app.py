@@ -518,7 +518,7 @@ with c4: st.metric("IST",now.strftime("%H:%M:%S"))
 
 with st.expander("🔧 Diagnostic", expanded=False):
     # App is private (only invited viewers), so diagnostic shows directly.
-    for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
+    for k in ["DHAN_CLIENT_ID","DHAN_ACCESS_TOKEN","DHAN_TOTP_SECRET","DHAN_PIN","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"]:
         v=os.environ.get(k)
         if v: st.success(f"✅ {k} present")
         else: st.error(f"❌ {k} MISSING")
