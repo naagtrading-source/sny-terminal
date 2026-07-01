@@ -97,7 +97,10 @@ def main():
     sent_count = 0
     for h in hits:
         sym = h["sym"]
-        if sym in already:
+        # Dedup by symbol+direction so a trend FLIP (e.g. ACCUMULATION -> DISTRIBUTION)
+        # re-alerts within the same hour, while an unchanged trend stays suppressed.
+        _key = f"{sym}|{h.get('direction','')}"
+        if _key in already:
             continue
         msg = "\n".join([
             f"{h['emoji']} *DAILY {h['direction']}*",
@@ -110,7 +113,7 @@ def main():
             f"🕐 {now_str} IST · daily timeframe",
         ])
         _tg_send(token, chat, msg)
-        new_syms.add(sym)
+        new_syms.add(_key)
         sent_count += 1
 
     _save_sent(slot, new_syms)
