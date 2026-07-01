@@ -3,3 +3,4 @@ venv/
 __pycache__/
 *.bak*
 api-scrip-master.csv
+.token_expiry
