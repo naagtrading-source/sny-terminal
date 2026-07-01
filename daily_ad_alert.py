@@ -17,12 +17,12 @@ def _load_dotenv():
     except Exception:
         pass
 
-def _tg_send(token, chat, msg):
+def _tg_send(token, chat, msg, thread_id=None):
     import requests
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
+            json={"chat_id": chat, "text": msg, "parse_mode": "Markdown", **({"message_thread_id": int(thread_id)} if thread_id else {})},
             timeout=8,
         )
     except Exception as e:
@@ -51,6 +51,10 @@ def main():
     _load_dotenv()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat  = os.environ.get("TELEGRAM_CHAT_ID", "")
+    _group = os.environ.get("TG_GROUP_CHAT", "")
+    _topic_ad = os.environ.get("TG_TOPIC_AD", "")
+    _dst = _group if _group else chat
+    _thread = _topic_ad if _group else None
     if not token or not chat:
         print("[ad-alert] no telegram creds", file=sys.stderr); return
     py = sys.executable
@@ -112,7 +116,7 @@ def main():
             "━━━━━━━━━━━━━━━",
             f"🕐 {now_str} IST · daily timeframe",
         ])
-        _tg_send(token, chat, msg)
+        _tg_send(token, _dst, msg, _thread)
         new_syms.add(_key)
         sent_count += 1
 

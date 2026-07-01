@@ -40,11 +40,11 @@ def _ensure_token_fresh():
     except Exception as e:
         print(f"[detect] token check err: {e}", file=sys.stderr)
 
-def _tg_send(token, chat, msg):
+def _tg_send(token, chat, msg, thread_id=None):
     import requests
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"}, timeout=8)
+                      json={"chat_id": chat, "text": msg, "parse_mode": "Markdown", **({"message_thread_id": int(thread_id)} if thread_id else {})}, timeout=8)
     except Exception as e:
         print(f"[detect] tg err: {e}", file=sys.stderr)
 
@@ -101,6 +101,20 @@ def main():
     _load_dotenv()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat  = os.environ.get("TELEGRAM_CHAT_ID", "")
+    _group = os.environ.get("TG_GROUP_CHAT", "")
+    _topic_nse  = os.environ.get("TG_TOPIC_NSE", "")
+    _topic_comm = os.environ.get("TG_TOPIC_COMMODITY", "")
+    _topic_cry  = os.environ.get("TG_TOPIC_CRYPTO", "")
+    # If a group is configured, send there with per-market topics; else fallback to chat.
+    _dst = _group if _group else chat
+    def _topic_for(cat):
+        if not _group:
+            return None
+        if cat == "Commodity":
+            return _topic_comm
+        if cat == "Crypto":
+            return _topic_cry
+        return _topic_nse  # Index / Stock
     state = {"prev": defaultdict(dict), "volhist": defaultdict(list), "candle_vol": {}}
     crypto_prev, crypto_hist, crypto_sent = {}, {}, {}
     tg_sent = {}  # {skey: last_sent_ts}
@@ -129,8 +143,8 @@ def main():
                         if now_ts - tg_sent.get(skey, 0) < TG_COOLDOWN:
                             continue
                         tg_sent[skey] = now_ts
-                        if token and chat:
-                            _tg_send(token, chat, _fmt_alert(b))
+                        if token and _dst:
+                            _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
                 else:
                     print("[detect] no quotes this cycle", file=sys.stderr)
 
@@ -152,8 +166,8 @@ def main():
                         f"\U0001f4ca Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}\u00d7 avg)",
                         f"\U0001f550 {r['time']} IST",
                     ])
-                    if token and chat:
-                        _tg_send(token, chat, cmsg)
+                    if token and _dst:
+                        _tg_send(token, _dst, cmsg, _topic_for("Crypto"))
             except Exception as ce:
                 print(f"[detect] crypto err: {ce}", file=sys.stderr)
         except Exception as e:
