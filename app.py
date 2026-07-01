@@ -12,6 +12,7 @@ import os, json, re, subprocess, sys, gc, time
 import requests as _req
 from datetime import datetime
 from collections import defaultdict
+import detect_core
 
 # ── Telegram alerts ───────────────────────────────────────────────────────────
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -364,136 +365,16 @@ def candle_spike(ikey, cat, inc, now):
 
 
 def detect_blocks():
-    ts  = datetime.now(IST).strftime("%H:%M:%S")
-    new = []
-    for cat, entries in token_map.items():
-        for entry in entries:
-            tok  = entry.get("tok")
-            if not tok: continue
-            seg  = entry["seg"]; kind = entry["type"]
-            sk   = entry.get("strike"); exp = entry.get("expiry","")
-            sym  = entry.get("sym",""); symbol = entry.get("symbol", sym)
-            lot  = LOTS.get(symbol, 100)
-
-            q   = live_quote(tok, seg)
-            ltp = _ltp(q); vol = _vol(q); oi = _oi(q); ltq = _ltq(q)
-            if vol <= 0 and ltp <= 0: continue
-
-            ikey = f"{symbol}|{kind}|{sk}|{exp}"
-            h = st.session_state["volhist"][ikey]
-
-            prev      = st.session_state["prev"].get(ikey, {})
-            prev_vol  = prev.get("vol", vol)
-            prev_oi   = prev.get("oi",  oi)
-            prev_ltp  = prev.get("ltp", ltp)
-            vol_jump  = vol - prev_vol
-            # FIX: store per-tick increment (not cumulative vol) so avg is meaningful
-            h.append(max(0, vol_jump))
-            if len(h) > 15: h.pop(0)
-            avg       = vh_avg(ikey)
-            oi_chg    = oi  - prev_oi
-            oi_pct    = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
-            price_chg = ltp - prev_ltp
-
-            # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
-            is_unusual = False; reasons = []
-
-            # ── Interpretation (always computed, shown beside each) ──────────
-            label, emoji, bias = interpret_activity(kind, oi_chg, price_chg)
-            # Buy/sell pressure as a secondary read
-            bq = int(_f(q.get("total_buy", 0) or 0))
-            sq = int(_f(q.get("total_sell", 0) or 0))
-            pressure = "BUY-led" if bq > sq*1.2 else "SELL-led" if sq > bq*1.2 else "balanced"
-
-            # ── Flags for "unusual" — need MIN_HISTORY ticks before flagging ────
-            flags = []
-            has_history = len(h) >= MIN_HISTORY  # don't flag on first few ticks
-            # OI sanity: changes > 50% in one tick are comparison artifacts, not real
-            oi_sane = abs(oi_pct) < 50
-            # Skip if nothing actually traded since last tick
-            prev_ltq = prev.get("ltq", 0)
-
-            if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
-                is_unusual = True
-                flags.append(f"⚡ Vol {vol_jump/avg:.1f}× normal")
-            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
-                is_unusual = True
-                flags.append(f"OI {oi_pct:+.0f}%")
-            if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
-                is_unusual = True
-                flags.append(f"Block {ltq:,}")
-
-            # FIX: candle spike detection — 5m/15m volume vs previous candle
-            _cf = candle_spike(ikey, cat, vol_jump, datetime.now(IST))
-            cs_5m  = _cf.get("5m", 0.0)
-            cs_15m = _cf.get("15m", 0.0)
-            if cs_5m or cs_15m:
-                is_unusual = True
-
-            value_cr = (vol * ltp) / 1e7   # total traded value (turnover)
-            jump_cr  = (vol_jump * ltp) / 1e7
-
-            # ── BUYING or SELLING? ───────────────────────────────────────────
-            # Combine price direction (with volume) + order-book pressure.
-            # Aggressive buying: price up while volume surges, buy-side heavier.
-            # Aggressive selling: price down while volume surges, sell-side heavier.
-            buy_score = 0
-            if price_chg > 0: buy_score += 1
-            if price_chg < 0: buy_score -= 1
-            if bq > sq*1.2:   buy_score += 1
-            if sq > bq*1.2:   buy_score -= 1
-            if   buy_score >= 1:  side, side_emoji = "BUYING",  "🟢"
-            elif buy_score <= -1: side, side_emoji = "SELLING", "🔴"
-            else:                 side, side_emoji = "MIXED",   "⚪"
-            # Volume vs regular (how many times its normal)
-            vol_mult = (vol_jump/avg) if avg > 0 else 0
-
-            # ── ACCUMULATION / DISTRIBUTION (silent institutional absorption) ──
-            # Signature: price barely moves (tight range) BUT volume is huge AND
-            # OI is building. Big players absorbing supply/demand without moving price.
-            acc_dist = ""; acc_emoji = ""
-            price_pct = abs(price_chg / ltp * 100) if ltp > 0 else 0
-            is_flat = price_pct < 0.5          # price moved less than 0.5%
-            huge_vol = vol_mult >= VOL_SPIKE_MULT   # volume >= 3x regular
-            oi_building = oi_chg > 0 and prev_oi > 0 and oi_pct >= 3
-            if is_flat and huge_vol and oi_building:
-                # Direction from order-book pressure / slight price bias
-                if bq > sq*1.1 or price_chg > 0:
-                    acc_dist, acc_emoji = "ACCUMULATION", "🟢🔇"   # silent buying
-                elif sq > bq*1.1 or price_chg < 0:
-                    acc_dist, acc_emoji = "DISTRIBUTION", "🔴🔇"   # silent selling
-                else:
-                    acc_dist, acc_emoji = "ABSORPTION", "🟡🔇"     # unclear side
-                is_unusual = True
-                flags.append(f"{acc_emoji} {acc_dist} (flat price + {vol_mult:.1f}× vol + OI{oi_pct:+.0f}%)")
-
-            st.session_state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp,"ltq":ltq}
-
-            # Show every contract that has real volume (it's a LIST).
-            # Skip only dead/no-volume contracts.
-            # Show any contract that has ANY volume (it's a live list).
-            if vol > 0 or is_unusual:
-                new.append({
-                    "time":ts,"category":cat,"symbol":symbol,
-                    "strike":str(sk) if sk else "FUT","type":kind,
-                    "expiry":exp,"ltp":ltp,"vol_jump":vol_jump,
-                    "total_vol":vol,"avg_vol":int(avg),"vol_mult":round(vol_mult,1),
-                    "cs_5m":cs_5m,"cs_15m":cs_15m,
-                    "value_cr":round(value_cr,2),"jump_cr":round(jump_cr,2),
-                    "ltq":ltq,"pressure":pressure,
-                    "side":side,"side_emoji":side_emoji,
-                    "acc_dist":acc_dist,"acc_emoji":acc_emoji,
-                    "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),
-                    "price_chg":round(price_chg,2),
-                    "activity":label,"emoji":emoji,"bias":bias,
-                    "is_unusual":is_unusual,
-                    "trend":f"{emoji} {label}",
-                    "underlying":ltp,"reasons":" · ".join(flags) if flags else "—",
-                })
-            del q
-    # Sort the list by volume (highest traded first)
-    new.sort(key=lambda b: b["total_vol"], reverse=True)
-    return new
+    # Delegates to the shared detect_core.run_detection so the site and the
+    # headless daemon (live_detect.py) use ONE detection engine — identical
+    # thresholds, logic, and Nx multiples. Any tuning in detect_core applies
+    # to both automatically.
+    state = {
+        "prev": _STORE["prev"],
+        "volhist": _STORE["volhist"],
+        "candle_vol": _STORE.setdefault("candle_vol", {}),
+    }
+    return detect_core.run_detection(token_map, sdk_quotes, state)
 
 
 # ── Market hours ───────────────────────────────────────────────────────────────
