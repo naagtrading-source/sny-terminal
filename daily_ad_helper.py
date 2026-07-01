@@ -35,6 +35,28 @@ def main():
     to  = today.strftime("%Y-%m-%d")
 
     hits = []
+    # Batch-fetch all live quotes ONCE (grouped by segment) to avoid per-contract
+    # rate-limit errors. quote_data can return a string on throttle, so guard it.
+    _live = {}
+    _by_seg = {}
+    for t in toks:
+        _by_seg.setdefault(t.get("seg", "NSE_FNO"), []).append(int(t["tok"]))
+    for _seg, _ids in _by_seg.items():
+        for _attempt in range(4):
+            try:
+                _q = dhan.quote_data({_seg: _ids})
+                if isinstance(_q, dict) and _q.get("status") == "success":
+                    _sd = _q.get("data", {}).get("data", {}).get(_seg, {})
+                    for _tk, _qd in _sd.items():
+                        _live[_tk] = _qd
+                    break  # success
+                # string error or non-success = throttled; wait and retry
+                time.sleep(1.5 * (_attempt + 1))
+            except Exception as _e:
+                time.sleep(1.5 * (_attempt + 1))
+        else:
+            print(f"[ad] batch quote {_seg} failed after retries", file=sys.stderr)
+        time.sleep(0.4)
     for t in toks:
         sym = t.get("sym","?")
         try:
@@ -52,24 +74,31 @@ def main():
             closes= d.get("close", []) or []
             if len(vols) < MIN_RANK_DAYS + 1:
                 continue
-            today_vol = _f(vols[-1])
+            # LIVE today's volume/open/close from the quote API — historical_daily_data
+            # only returns COMPLETED candles (today's isn't included), so vols[-1] is
+            # the last finished session, not today. Use the live quote for today.
+            qd = _live.get(str(t["tok"]), {})
+            today_vol = _f(qd.get("volume", 0))
             if today_vol <= 0:
                 continue
-            # how many days back is today's volume the highest?
+            # rank: how many completed historical days had LOWER volume than today (live)
             rank_days = 1
-            for i in range(len(vols) - 2, -1, -1):
+            for i in range(len(vols) - 1, -1, -1):
                 if _f(vols[i]) < today_vol:
                     rank_days += 1
                 else:
                     break
             if rank_days < MIN_RANK_DAYS:
                 continue
-            # 30-day avg (excluding today) for context
-            window = [_f(x) for x in vols[-31:-1]] or [_f(x) for x in vols[:-1]]
+            # avg of historical completed candles (all are 'past' now) for context
+            window = [_f(x) for x in vols[-30:]] or [_f(x) for x in vols]
             avg = sum(window) / len(window) if window else 0.0
             x_avg = round(today_vol / avg, 1) if avg > 0 else 0.0
-            # direction
-            o = _f(opens[-1]); c = _f(closes[-1])
+            # direction from today's LIVE open vs current price
+            o = _f(qd.get("open", 0))
+            c = _f(qd.get("last_price", qd.get("close", 0)))
+            if o <= 0:
+                o = _f(opens[-1])  # fallback to last candle open if live open missing
             chg_pct = round((c - o) / o * 100, 2) if o > 0 else 0.0
             if c > o:
                 direction, emoji = "ACCUMULATION", "🟢"
