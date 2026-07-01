@@ -563,6 +563,56 @@ def _refresh_quotes_bg(holder, toks):
 
 @st.fragment(run_every=60 if (nse_l or mcx_l) else None)
 
+def _render_daily_ad_tab():
+    """Daily-timeframe accumulation/distribution vs trailing ~30 days.
+    Flags futures whose today volume is the highest in >=10 days, tagged
+    ACC/DIST by close-vs-open. Fetches once per day (cached), heavy (~54 calls)."""
+    import datetime as _dt
+    st.caption("Daily volume vs last ~30 days \u00b7 flags highest-volume day in \u226510d \u00b7 includes today's partial candle")
+    today_key = _dt.date.today().isoformat()
+    cache = _STORE.setdefault("daily_ad", {})
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        rescan = st.button("\U0001f504 Rescan", key="ad_rescan")
+    have_cached = cache.get("date") == today_key and cache.get("hits") is not None
+    if rescan or not have_cached:
+        futs = []
+        for cat in ("Index", "Stock"):
+            for c in (token_map.get(cat, []) or []):
+                if c.get("type") == "FUT" and c.get("tok"):
+                    futs.append({"tok": c["tok"], "seg": c.get("seg", "NSE_FNO"), "sym": c.get("sym", "?")})
+        if not futs:
+            st.info("No futures in token map yet \u2014 wait for the scan to populate.")
+            return
+        with st.spinner(f"Scanning daily volume across {len(futs)} futures\u2026 (~20-40s)"):
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "daily_ad_helper.py"],
+                    input=json.dumps(futs), capture_output=True, text=True,
+                    cwd=os.path.dirname(__file__), timeout=120,
+                )
+                out = json.loads(proc.stdout) if proc.stdout.strip() else {}
+                hits = out.get("hits", [])
+            except Exception as e:
+                st.error(f"Daily A/D scan failed: {e}")
+                return
+        cache["date"] = today_key
+        cache["hits"] = hits
+        _STORE["daily_ad"] = cache
+    hits = cache.get("hits", [])
+    if not hits:
+        st.info("No daily accumulation/distribution signals \u2014 no future is at a \u226510-day volume high right now.")
+        return
+    st.dataframe(pd.DataFrame([{
+        "Symbol": h["sym"],
+        "Signal": f"{h['emoji']} {h['direction']}",
+        "Vol Rank": f"highest in {h['rank_days']}d",
+        "\u00d730d Avg": f"{h['x_avg']}\u00d7",
+        "Close": f"\u20b9{h['close']:,}",
+        "Day Chg": f"{h['chg_pct']:+.2f}%",
+        "Today Vol": f"{h['today_vol']:,}",
+    } for h in hits]), width="stretch", hide_index=True)
+
 def _render_crypto_tab():
     from crypto_helper import detect_spikes
     crypto_prev  = _STORE.setdefault("crypto_prev", {})
@@ -756,11 +806,12 @@ def live_section():
 <span style='color:#484f58;font-size:0.8em'>{q.get("ts","")}</span>
 </div>""", unsafe_allow_html=True)
 
-    tab_nse, tab_stk, tab_mcx, tab_crypto = st.tabs(["\U0001f4c8 NSE Index","\U0001f4ca Stocks","\U0001f6e2 Commodities","\U0001fa99 Crypto"])
+    tab_nse, tab_stk, tab_mcx, tab_crypto, tab_ad = st.tabs(["\U0001f4c8 NSE Index","\U0001f4ca Stocks","\U0001f6e2 Commodities","\U0001fa99 Crypto","\U0001f4c5 Daily A/D"])
     with tab_nse: _render_tab("Index")
     with tab_stk: _render_tab("Stock")
     with tab_mcx: _render_tab("Commodity")
     with tab_crypto: _render_crypto_tab()
+    with tab_ad: _render_daily_ad_tab()
 
 live_section()
 st.caption("Auto-updates every 60s")
