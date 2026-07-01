@@ -18,7 +18,11 @@ TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 def send_telegram(block):
-    """Send an unusual activity alert to Telegram."""
+    """Send an unusual activity alert to Telegram.
+    DISABLED: the headless daemon (live_detect.py / sny-detect.service) is now
+    the sole alerter. This no-op prevents duplicate alerts when the site is open.
+    The app remains a live viewer; alerting is handled by the daemon."""
+    return  # daemon owns alerting
     if not TG_TOKEN or not TG_CHAT: return
     try:
         # Build clean contract label
