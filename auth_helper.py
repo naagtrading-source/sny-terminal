@@ -72,7 +72,11 @@ def main():
 
             print(f"[scan] {symbol}/{seg}: {len(sym_rows)} active contracts", file=sys.stderr)
 
-            futs = [r for r in sym_rows if "FUT" in r.get("SEM_INSTRUMENT_NAME","").upper()]
+            # OPTFUT (MCX commodity options) contains "FUT" — exclude anything
+            # with an option type so options are never misclassified as futures.
+            futs = [r for r in sym_rows
+                    if r.get("SEM_OPTION_TYPE","") not in ("CE","PE")
+                    and "FUT" in r.get("SEM_INSTRUMENT_NAME","").upper()]
             futs.sort(key=lambda r: r.get("SEM_EXPIRY_DATE",""))
             for r in futs[:2]:
                 sec_id = r["SEM_SMST_SECURITY_ID"]
