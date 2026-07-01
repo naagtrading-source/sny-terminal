@@ -83,7 +83,8 @@ def main():
 
     # 3) dedup per contract per hour-slot
     slot, already = _load_sent()
-    now_str = datetime.datetime.now().strftime("%H:%M")
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    now_str = datetime.datetime.now(ist).strftime("%H:%M")
     new_syms = set(already)
     sent_count = 0
     for h in hits:
