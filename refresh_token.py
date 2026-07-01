@@ -17,11 +17,25 @@ def main():
     pin       = os.environ["DHAN_PIN"].strip()
     secret    = os.environ["DHAN_TOTP_SECRET"].replace(" ", "").strip()
 
-    totp = pyotp.TOTP(secret).now()
+    import time as _time
+    totp_gen = pyotp.TOTP(secret)
     dl   = DhanLogin(client_id)
-    r    = dl.generate_token(pin, totp)
+    r = None; token = None
+    for attempt in range(3):
+        code = totp_gen.now()
+        r = dl.generate_token(pin, code)
+        token = r.get("accessToken") if isinstance(r, dict) else None
+        if token:
+            break
+        msg = str(r.get("message","")).lower() if isinstance(r, dict) else ""
+        print(f"[refresh] attempt {attempt+1} failed: {r}", file=sys.stderr)
+        if "2 minutes" in msg or "rate" in msg:
+            # Dhan rate limit — retrying won't help within the window; fail fast.
+            break
+        if attempt < 2:
+            secs_into = _time.time() % 30
+            _time.sleep(31 - secs_into)
 
-    token = r.get("accessToken") if isinstance(r, dict) else None
     if not token:
         print(f"[refresh] FAILED: {r}", file=sys.stderr)
         sys.exit(1)
