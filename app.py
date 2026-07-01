@@ -613,8 +613,28 @@ def _render_crypto_tab():
             "Trades": r["trades"],
         } for r in rows], use_container_width=True, hide_index=True)
 
+_LAST_TOKEN_REFRESH = 0
+def _ensure_token_fresh():
+    """If the Dhan token is within 20 min of expiry, refresh it.
+    Helpers re-read .env each call, so the new token flows automatically."""
+    global _LAST_TOKEN_REFRESH
+    import datetime, time as _t
+    try:
+        with open("/home/naag_qc/sny-bot/.token_expiry") as _f:
+            exp_raw = _f.read().strip()
+        exp = datetime.datetime.fromisoformat(exp_raw[:19])
+        mins_left = (exp - datetime.datetime.now()).total_seconds() / 60
+        if mins_left < 20 and (_t.time() - _LAST_TOKEN_REFRESH) > 180:
+            _LAST_TOKEN_REFRESH = _t.time()
+            subprocess.run([sys.executable, "refresh_token.py"],
+                           cwd=os.path.dirname(__file__), timeout=90)
+    except Exception:
+        pass  # never let the guard crash the scan
+
+
 def live_section():
     global sdk_quotes, token_map
+    _ensure_token_fresh()
     try:
         _s,_tm,_q,_d,_e = get_auth()
         if _tm: token_map = _tm

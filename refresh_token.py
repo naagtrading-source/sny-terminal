@@ -57,6 +57,12 @@ def main():
         f.writelines(lines)
 
     exp = r.get("expiryTime", "?")
+    # Persist expiry so the running bot can self-check without an API call.
+    try:
+        with open("/home/naag_qc/sny-bot/.token_expiry", "w") as ef:
+            ef.write(str(exp))
+    except Exception as _e:
+        print(f"[refresh] warn: could not write expiry file: {_e}", file=sys.stderr)
     print(f"[refresh] OK — token updated, expires {exp}")
 
 if __name__ == "__main__":
