@@ -64,6 +64,14 @@ def _fmt_alert(b):
     ]
     if b.get("acc_dist"):
         lines.append(f"🔔 {b.get('acc_emoji','')} {b['acc_dist']}")
+    # Show candle-spike multiples when this fired on the 5m/15m candle rule —
+    # explains a low tick ×avg (the alert triggered on candle volume, not tick).
+    cs5, cs15 = b.get("cs_5m", 0), b.get("cs_15m", 0)
+    if cs5 or cs15:
+        parts = []
+        if cs5:  parts.append(f"5m {cs5:.1f}×")
+        if cs15: parts.append(f"15m {cs15:.1f}×")
+        lines.append("📊 Candle: " + " · ".join(parts) + " vs prev")
     lines += ["━━━━━━━━━━━━━━━", f"🕐 {b['time']} IST"]
     return "\n".join(lines)
 
