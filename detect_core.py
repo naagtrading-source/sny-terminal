@@ -179,7 +179,9 @@ def run_detection(token_map, quotes, state):
             if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
-            if ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0:
+            _vmult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
+            if (ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0
+                    and has_history and avg > 0 and vol_jump >= avg * _vmult):
                 is_unusual = True
                 flags.append(f"Block {ltq:,}")
 
