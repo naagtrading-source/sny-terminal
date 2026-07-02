@@ -1,0 +1,18 @@
+[Unit]
+Description=SNY Block Order Detector
+After=network.target
+
+[Service]
+Type=simple
+User=naag_qc
+WorkingDirectory=/home/naag_qc/sny-bot
+EnvironmentFile=/home/naag_qc/sny-bot/.env
+ExecStart=/home/naag_qc/sny-bot/venv/bin/python -m streamlit run app.py --server.port 8501 --server.headless true
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

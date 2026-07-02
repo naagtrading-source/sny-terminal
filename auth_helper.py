@@ -11,11 +11,12 @@ def _f(v):
     except: return 0.0
 
 SYMBOLS = {
-    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN","AXISBANK","KOTAKBANK","LT","WIPRO","BAJFINANCE","TITAN","MARUTI","SUNPHARMA","TATAMOTORS","ADANIENT"],
+    "nse_fo": ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN","AXISBANK","KOTAKBANK","LT","WIPRO","BAJFINANCE","TITAN","MARUTI","SUNPHARMA","TATAMOTORS","ADANIENT","BHARTIARTL","HINDUNILVR","ITC","HCLTECH","ULTRACEMCO","NTPC","ADANIPORTS","ONGC","POWERGRID","M&M","TATASTEEL","ASIANPAINT","COALINDIA","BAJAJFINSV","NESTLEIND","JSWSTEEL","GRASIM","HDFCLIFE","TECHM","BAJAJ-AUTO","DRREDDY","CIPLA","BEL","EICHERMOT","HINDALCO","INDUSINDBK","APOLLOHOSP","BRITANNIA","SBILIFE","HEROMOTOCO","SHRIRAMFIN","TRENT","JIOFIN","ETERNAL"],
     "mcx_fo": ["GOLDM","SILVERM","CRUDEOIL","NATURALGAS","COPPER"],
 }
-STOCK_SET  = {"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN","AXISBANK","KOTAKBANK","LT","WIPRO","BAJFINANCE","TITAN","MARUTI","SUNPHARMA","TATAMOTORS","ADANIENT"}
+STOCK_SET  = {"RELIANCE","HDFCBANK","TCS","INFY","ICICIBANK","SBIN","AXISBANK","KOTAKBANK","LT","WIPRO","BAJFINANCE","TITAN","MARUTI","SUNPHARMA","TATAMOTORS","ADANIENT","BHARTIARTL","HINDUNILVR","ITC","HCLTECH","ULTRACEMCO","NTPC","ADANIPORTS","ONGC","POWERGRID","M&M","TATASTEEL","ASIANPAINT","COALINDIA","BAJAJFINSV","NESTLEIND","JSWSTEEL","GRASIM","HDFCLIFE","TECHM","BAJAJ-AUTO","DRREDDY","CIPLA","BEL","EICHERMOT","HINDALCO","INDUSINDBK","APOLLOHOSP","BRITANNIA","SBILIFE","HEROMOTOCO","SHRIRAMFIN","TRENT","JIOFIN","ETERNAL"}
 INDEX_SET  = {"NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"}
+FUT_ONLY = {"BHARTIARTL","HINDUNILVR","ITC","HCLTECH","ULTRACEMCO","NTPC","ADANIPORTS","ONGC","POWERGRID","M&M","TATASTEEL","ASIANPAINT","COALINDIA","BAJAJFINSV","NESTLEIND","JSWSTEEL","GRASIM","HDFCLIFE","TECHM","BAJAJ-AUTO","DRREDDY","CIPLA","BEL","EICHERMOT","HINDALCO","INDUSINDBK","APOLLOHOSP","BRITANNIA","SBILIFE","HEROMOTOCO","SHRIRAMFIN","TRENT","JIOFIN","ETERNAL"}
 STEPS = {
     "NIFTY":50,"BANKNIFTY":100,"FINNIFTY":50,"MIDCPNIFTY":25,
     "RELIANCE":50,"HDFCBANK":20,"TCS":100,"INFY":50,"ICICIBANK":20,"SBIN":10,
@@ -71,7 +72,11 @@ def main():
 
             print(f"[scan] {symbol}/{seg}: {len(sym_rows)} active contracts", file=sys.stderr)
 
-            futs = [r for r in sym_rows if "FUT" in r.get("SEM_INSTRUMENT_NAME","").upper()]
+            # OPTFUT (MCX commodity options) contains "FUT" — exclude anything
+            # with an option type so options are never misclassified as futures.
+            futs = [r for r in sym_rows
+                    if r.get("SEM_OPTION_TYPE","") not in ("CE","PE")
+                    and "FUT" in r.get("SEM_INSTRUMENT_NAME","").upper()]
             futs.sort(key=lambda r: r.get("SEM_EXPIRY_DATE",""))
             for r in futs[:2]:
                 sec_id = r["SEM_SMST_SECURITY_ID"]
@@ -101,6 +106,8 @@ def main():
 
             print(f"[scan] {symbol}: und=₹{und}", file=sys.stderr)
 
+            if symbol in FUT_ONLY:
+                continue
             opts = [r for r in sym_rows if r.get("SEM_OPTION_TYPE","") in ("CE","PE")]
             if opts:
                 exp_dates = sorted(set(r.get("SEM_EXPIRY_DATE","")[:10] for r in opts))
@@ -124,6 +131,17 @@ def main():
 
     quotes = {}
     for cat, conts in candidates.items():
+        # Dedupe by security_id (globally unique on Dhan) — the same contract
+        # can be reached via overlapping symbol/expiry passes. Preserve order.
+        seen = set()
+        deduped = []
+        for c in conts:
+            k = str(c["tok"])
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped.append(c)
+        conts = deduped
         token_map[cat] = conts
         futs = [c for c in conts if c["type"] == "FUT"]
         if not futs: continue
