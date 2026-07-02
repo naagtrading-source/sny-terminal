@@ -22,6 +22,18 @@ MIN_VOL_JUMP_COMM = 2000   # MCX: commodities trade far lower volume; 50k never 
 
 def _min_jump(cat):
     return MIN_VOL_JUMP_COMM if cat == "Commodity" else MIN_VOL_JUMP
+
+def _tod_factor(now):
+    """Time-of-day threshold scaling: open/close are naturally 5-10x heavier,
+    so a '10x spike' at 09:20 is routine. Stricter bar in those windows."""
+    hm = now.hour * 60 + now.minute
+    if 9*60+15 <= hm < 9*60+45:   return 1.5   # opening rush
+    if 15*60   <= hm <= 15*60+30: return 1.3   # closing auction ramp
+    return 1.0
+
+def _spike_mult(cat, now):
+    base = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
+    return base * _tod_factor(now)
 LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 15.0      # OI change > 15% = significant new institutional positions
 BIG_TRADE_LOTS = 50        # single trade >= 50 lots = block print
@@ -169,7 +181,9 @@ def run_detection(token_map, quotes, state):
             if _dkey not in _dayoi and oi > 0:
                 _dayoi[_dkey] = oi
             _oi0 = _dayoi.get(_dkey, 0)
-            oi_pct = ((oi - _oi0) / _oi0 * 100) if _oi0 > 0 else 0
+            # need a meaningful baseline: new/far strikes open with ~0 OI and
+            # produce absurd percentages (+18900%). Below 500 OI, treat as n/a.
+            oi_pct = ((oi - _oi0) / _oi0 * 100) if _oi0 >= 500 else 0
             price_chg = ltp - prev_ltp
 
             # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
@@ -190,13 +204,13 @@ def run_detection(token_map, quotes, state):
             # Skip if nothing actually traded since last tick
             prev_ltq = prev.get("ltq", 0)
 
-            if has_history and avg > 0 and vol_jump >= _min_jump(cat) and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
+            if has_history and avg > 0 and vol_jump >= _min_jump(cat) and vol_jump >= avg * _spike_mult(cat, datetime.now(IST)):
                 is_unusual = True
                 flags.append(f"⚡ Vol {vol_jump/avg:.1f}× normal")
-            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and _oi0 > 0 and vol_jump >= _min_jump(cat) and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
+            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and _oi0 > 0 and vol_jump >= _min_jump(cat) and avg > 0 and vol_jump >= avg * _spike_mult(cat, datetime.now(IST)):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
-            _vmult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
+            _vmult = _spike_mult(cat, datetime.now(IST))
             if (ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0
                     and has_history and avg > 0 and vol_jump >= avg * _vmult):
                 is_unusual = True
@@ -233,7 +247,10 @@ def run_detection(token_map, quotes, state):
             acc_dist = ""; acc_emoji = ""
             price_pct = abs(price_chg / ltp * 100) if ltp > 0 else 0
             is_flat = price_pct < 0.5          # price moved less than 0.5%
-            huge_vol = vol_mult >= VOL_SPIKE_MULT   # volume >= 3x regular
+            # acc/dist must ALSO clear the absolute volume floor + history —
+            # 14x of a tiny average is noise, not institutional absorption
+            huge_vol = (vol_mult >= VOL_SPIKE_MULT and has_history
+                        and vol_jump >= _min_jump(cat))
             oi_building = oi_chg > 0 and prev_oi > 0 and oi_pct >= 3
             if is_flat and huge_vol and oi_building:
                 # Direction from order-book pressure / slight price bias

@@ -12,7 +12,7 @@ sys.path.insert(0, BASE)
 import detect_core
 from detect_core import IST, _vol, _ltp
 
-POLL_SECONDS = 60
+POLL_SECONDS = 30
 TG_COOLDOWN  = 120  # short floor only; real dedup is event-based (fresh burst since last alert)
 STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".detect_state.json")
 
