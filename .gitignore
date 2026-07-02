@@ -7,3 +7,4 @@ api-scrip-master.csv
 .token_expiry
 .ad_alert_sent
 .detect_state.json
+.inst_alert_sent
