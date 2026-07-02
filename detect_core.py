@@ -291,3 +291,60 @@ def run_detection(token_map, quotes, state):
     new.sort(key=lambda b: b["total_vol"], reverse=True)
     return new
 
+
+
+# ── DEPTH WALL DETECTION ──────────────────────────────────────────────────────
+WALL_DOMINANCE  = 8.0   # level must be >= 8x the median of other levels
+WALL_MIN_LOTS   = 25    # and at least this many lots resting
+WALL_PERSIST    = 3     # must survive N consecutive cycles (~90s at 30s poll)
+WALL_ZONE_PCT   = 0.3   # same-wall tolerance: price within 0.3%
+
+def detect_walls(token_map, quotes, wall_state, now=None):
+    """Scan top-5 depth for persistent one-sided resting walls.
+    wall_state: dict persisted by caller. Returns list of wall alerts."""
+    alerts = []
+    seen = set()
+    for cat, entries in token_map.items():
+        if cat == "Crypto":
+            continue
+        for e in entries:
+            tok = str(e.get("tok") or "")
+            q = quotes.get(tok, {})
+            depth = q.get("depth") if isinstance(q, dict) else None
+            if not isinstance(depth, dict):
+                continue
+            sym = e.get("sym", "?"); symbol = e.get("symbol", sym)
+            lot = LOTS.get(symbol, 100)
+            ltp = _ltp(q)
+            for side in ("buy", "sell"):
+                levels = [l for l in (depth.get(side) or []) if _f(l.get("quantity")) > 0]
+                if len(levels) < 3:
+                    continue
+                qtys = sorted(_f(l.get("quantity")) for l in levels)
+                top = max(levels, key=lambda l: _f(l.get("quantity")))
+                top_q = _f(top.get("quantity"))
+                others = [x for x in qtys if x != top_q] or [qtys[0]]
+                med = others[len(others)//2]
+                if med <= 0 or top_q < med * WALL_DOMINANCE or top_q < lot * WALL_MIN_LOTS:
+                    # not a wall this cycle -> decay any tracked wall on this side
+                    wall_state.pop(f"{tok}|{side}", None)
+                    continue
+                price = _f(top.get("price"))
+                key = f"{tok}|{side}"
+                w = wall_state.get(key)
+                if w and ltp > 0 and abs(price - w["price"]) / ltp * 100 <= WALL_ZONE_PCT:
+                    w["count"] += 1; w["qty"] = top_q; w["price"] = price
+                else:
+                    w = {"count": 1, "qty": top_q, "price": price, "alerted": False}
+                    wall_state[key] = w
+                seen.add(key)
+                grew = w.get("alerted") and top_q >= 2 * w.get("alert_qty", top_q)
+                if (w["count"] >= WALL_PERSIST and not w.get("alerted")) or grew:
+                    w["alerted"] = True; w["alert_qty"] = top_q
+                    alerts.append({
+                        "sym": sym, "symbol": symbol, "category": cat,
+                        "side": side, "price": price, "qty": int(top_q),
+                        "lots": round(top_q / lot, 1), "x_book": round(top_q / med, 1),
+                        "ltp": ltp, "persist_cycles": w["count"],
+                    })
+    return alerts

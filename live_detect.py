@@ -212,6 +212,27 @@ def main():
                             "acc_dist": b.get("acc_dist"), "reasons": b.get("reasons")})
                         if token and _dst:
                             _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
+                    # ── depth walls (persistent resting institutional orders) ──
+                    try:
+                        walls = detect_core.detect_walls(tm, quotes, state.setdefault("walls", {}))
+                        for w in walls:
+                            e = "🟢" if w["side"] == "buy" else "🔴"
+                            wmsg = "\n".join([
+                                f"🧱 *DEPTH WALL* {e}",
+                                "━━━━━━━━━━━━━━━",
+                                f"📌 {w['sym']}",
+                                f"{e} {w['side'].upper()} wall: {w['qty']:,} ({w['lots']} lots)",
+                                f"💰 @ ₹{w['price']:,}  (LTP ₹{w['ltp']:,})",
+                                f"📊 {w['x_book']}× rest of book · holding {w['persist_cycles']} cycles",
+                                "━━━━━━━━━━━━━━━",
+                            ])
+                            _log_signal({"src": "wall", "sym": w["sym"], "side": w["side"],
+                                "qty": w["qty"], "lots": w["lots"], "x_book": w["x_book"],
+                                "price": w["price"], "ltp": w["ltp"]})
+                            if token and _dst:
+                                _tg_send(token, _dst, wmsg, _topic_for(w.get("category")))
+                    except Exception as we:
+                        print(f"[detect] wall err: {we}", file=sys.stderr)
                 else:
                     print("[detect] no quotes this cycle", file=sys.stderr)
 
