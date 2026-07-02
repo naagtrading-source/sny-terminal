@@ -17,7 +17,11 @@ LOTS = {
 # Thresholds — ONLY institutional-level activity (very high bar)
 VOL_SPIKE_MULT = 10.0
 COMM_SPIKE_MULT = 5.0       # volume jump must be > 5x this contract's own average
-MIN_VOL_JUMP   = 50000     # ignore jumps under 50k (institutional = large)
+MIN_VOL_JUMP   = 50000     # NSE: ignore jumps under 50k (institutional = large)
+MIN_VOL_JUMP_COMM = 2000   # MCX: commodities trade far lower volume; 50k never fires
+
+def _min_jump(cat):
+    return MIN_VOL_JUMP_COMM if cat == "Commodity" else MIN_VOL_JUMP
 LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 15.0      # OI change > 15% = significant new institutional positions
 BIG_TRADE_LOTS = 50        # single trade >= 50 lots = block print
@@ -110,15 +114,21 @@ def candle_spike(cs, ikey, cat, inc, now):
     out = {}  # {"5m": 3.2, "15m": 0.0} — multiple of prev candle when fired, else 0
     for win, secs in (("5m", 300), ("15m", 900)):
         b = int(now.timestamp() // secs) * secs
-        d = s.setdefault(win, {"b": b, "cur": 0.0, "prev": 0.0, "fired": None})
+        d = s.setdefault(win, {"b": b, "cur": 0.0, "hist": [], "fired": None})
         if b != d["b"]:
-            d["prev"] = d["cur"]; d["cur"] = 0.0; d["b"] = b; d["fired"] = None
+            # candle closed: push into rolling history (keep last 5)
+            d.setdefault("hist", []).append(d["cur"])
+            del d["hist"][:-5]
+            d["cur"] = 0.0; d["b"] = b; d["fired"] = None
         d["cur"] += inc
-        prev = d["prev"]
+        hist = d.get("hist", [])
+        base = sum(hist) / len(hist) if hist else 0.0
         out[win] = 0.0
-        if prev >= MIN_VOL_JUMP and d["cur"] >= prev * mult and d["fired"] != b:
+        # compare vs AVG of last 5 candles (not just previous one) — one quiet
+        # candle no longer makes the next look like a spike
+        if len(hist) >= 3 and base >= _min_jump(cat) and d["cur"] >= base * mult and d["fired"] != b:
             d["fired"] = b
-            out[win] = round(d["cur"] / prev, 1)
+            out[win] = round(d["cur"] / base, 1)
     return out
 
 
@@ -152,7 +162,14 @@ def run_detection(token_map, quotes, state):
             if len(h) > 15: h.pop(0)
             avg       = vh_avg(state['volhist'], ikey)
             oi_chg    = oi  - prev_oi
-            oi_pct    = (oi_chg/prev_oi*100) if prev_oi > 0 else 0
+            # Session-cumulative OI: compare vs first OI seen today. Tick-over-tick
+            # OI is ~0% in 60s; day-start delta is the real institutional signal.
+            _dayoi = state.setdefault("day_oi", {})
+            _dkey  = f"{ikey}|{datetime.now(IST).strftime('%Y-%m-%d')}"
+            if _dkey not in _dayoi and oi > 0:
+                _dayoi[_dkey] = oi
+            _oi0 = _dayoi.get(_dkey, 0)
+            oi_pct = ((oi - _oi0) / _oi0 * 100) if _oi0 > 0 else 0
             price_chg = ltp - prev_ltp
 
             # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
@@ -173,10 +190,10 @@ def run_detection(token_map, quotes, state):
             # Skip if nothing actually traded since last tick
             prev_ltq = prev.get("ltq", 0)
 
-            if has_history and avg > 0 and vol_jump >= MIN_VOL_JUMP and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
+            if has_history and avg > 0 and vol_jump >= _min_jump(cat) and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"⚡ Vol {vol_jump/avg:.1f}× normal")
-            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and prev_oi > 0 and vol_jump >= MIN_VOL_JUMP and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
+            if has_history and oi_sane and abs(oi_pct) >= OI_CHANGE_PCT and _oi0 > 0 and vol_jump >= _min_jump(cat) and avg > 0 and vol_jump >= avg * (COMM_SPIKE_MULT if cat=="Commodity" else VOL_SPIKE_MULT):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             _vmult = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT

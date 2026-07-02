@@ -63,7 +63,7 @@ def main():
             r = dhan.historical_daily_data(
                 security_id=str(t["tok"]),
                 exchange_segment=t.get("seg","NSE_FNO"),
-                instrument_type="FUTSTK",
+                instrument_type=("FUTCOM" if t.get("seg") == "MCX_COMM" else "FUTSTK"),
                 from_date=frm, to_date=to,
             )
             if not (isinstance(r, dict) and r.get("status") == "success"):

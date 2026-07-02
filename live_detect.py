@@ -14,6 +14,42 @@ from detect_core import IST, _vol, _ltp
 
 POLL_SECONDS = 60
 TG_COOLDOWN  = 300  # per-contract alert cooldown (secs) — matches app's 5-min
+STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".detect_state.json")
+
+def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
+    """Persist detection state so a restart resumes with baselines intact."""
+    try:
+        import time as _t
+        cutoff = _t.time() - 86400
+        blob = {
+            "prev": dict(state.get("prev", {})),
+            "volhist": dict(state.get("volhist", {})),
+            "candle_vol": state.get("candle_vol", {}),
+            "day_oi": state.get("day_oi", {}),
+            "tg_sent": {k: v for k, v in tg_sent.items() if v > cutoff},
+            "crypto_prev": crypto_prev, "crypto_hist": crypto_hist,
+            "crypto_sent": crypto_sent,
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(blob, f)
+    except Exception as e:
+        print(f"[detect] state save err: {e}", file=sys.stderr)
+
+def _load_state():
+    try:
+        with open(STATE_FILE) as f:
+            b = json.load(f)
+        from collections import defaultdict as _dd
+        state = {"prev": _dd(dict, b.get("prev", {})),
+                 "volhist": _dd(list, b.get("volhist", {})),
+                 "candle_vol": b.get("candle_vol", {}),
+                 "day_oi": b.get("day_oi", {})}
+        return (state, b.get("tg_sent", {}), b.get("crypto_prev", {}),
+                b.get("crypto_hist", {}), b.get("crypto_sent", {}))
+    except Exception:
+        from collections import defaultdict as _dd
+        return ({"prev": _dd(dict), "volhist": _dd(list), "candle_vol": {}},
+                {}, {}, {}, {})
 
 def _load_dotenv():
     try:
@@ -115,9 +151,9 @@ def main():
         if cat == "Crypto":
             return _topic_cry
         return _topic_nse  # Index / Stock
-    state = {"prev": defaultdict(dict), "volhist": defaultdict(list), "candle_vol": {}}
-    crypto_prev, crypto_hist, crypto_sent = {}, {}, {}
-    tg_sent = {}  # {skey: last_sent_ts}
+    state, tg_sent, crypto_prev, crypto_hist, crypto_sent = _load_state()
+    print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
+    _last_save = 0.0
     tm = {}
     tm_refreshed = 0
     print("[detect] daemon started", file=sys.stderr)
@@ -172,6 +208,9 @@ def main():
                 print(f"[detect] crypto err: {ce}", file=sys.stderr)
         except Exception as e:
             print(f"[detect] loop err: {e}", file=sys.stderr)
+        if time.time() - _last_save > 300:
+            _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent)
+            _last_save = time.time()
         time.sleep(POLL_SECONDS)
 
 if __name__ == "__main__":
