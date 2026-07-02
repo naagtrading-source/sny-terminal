@@ -75,32 +75,47 @@ def main():
     except Exception:
         print("[inst] helper parse failed", file=sys.stderr); return
 
-    # ── Big Deals message ──
-    lines = ["🏦 *INSTITUTIONAL DEALS — EOD*", "━━━━━━━━━━━━━━━"]
-    n = 0
+    # ── Big Deals — clear per-deal blocks, sorted by value, auto-split ──
+    deals = []
     seen = set()
-    def _fmt(r, tag):
-        sym = r.get("Symbol","?"); who = r.get("Client Name","?")
-        side = r.get("Buy/Sell","?"); qty = _f(r.get("Quantity Traded"))
-        px = _f(r.get("Trade Price / Wght. Avg. Price"))
-        cr = qty * px / 1e7
-        e = "🟢" if side.upper().startswith("B") else "🔴"
-        return f"{e} *{sym}* {tag}\n   {who}\n   {side} {qty:,.0f} @ ₹{px:,.2f}  (₹{cr:.1f}cr)"
     for kind in ("block", "bulk"):
-        for r in d_watch.get(kind, []):
-            key = (kind, r.get("Symbol"), r.get("Client Name"), r.get("Buy/Sell"))
-            if key in seen: continue
-            seen.add(key); lines.append(_fmt(r, kind.upper())); n += 1
-        for r in d_all.get(kind, []):
-            qty = _f(r.get("Quantity Traded")); px = _f(r.get("Trade Price / Wght. Avg. Price"))
-            if qty * px / 1e7 < MEGA_CR: continue
-            key = (kind, r.get("Symbol"), r.get("Client Name"), r.get("Buy/Sell"))
-            if key in seen: continue
-            seen.add(key); lines.append(_fmt(r, kind.upper() + " 💰")); n += 1
+        for src, is_watch in ((d_watch, True), (d_all, False)):
+            for r in src.get(kind, []):
+                qty = _f(r.get("Quantity Traded")); px = _f(r.get("Trade Price / Wght. Avg. Price"))
+                cr = qty * px / 1e7
+                if not is_watch and cr < MEGA_CR:
+                    continue
+                key = (kind, r.get("Symbol"), r.get("Client Name"), r.get("Buy/Sell"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deals.append({"kind": kind, "sym": r.get("Symbol", "?"),
+                              "who": r.get("Client Name", "?"), "side": r.get("Buy/Sell", "?"),
+                              "qty": qty, "px": px, "cr": cr, "watch": is_watch})
+    n = len(deals)
     if n:
-        lines.append("━━━━━━━━━━━━━━━")
-        lines.append(f"🕐 {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5,minutes=30))).strftime('%d-%b %H:%M')} IST")
-        _tg_send(token, chat, "\n".join(lines[:60]), t_deals)
+        deals.sort(key=lambda x: -x["cr"])
+        ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        cur = [f"🏦 *INSTITUTIONAL DEALS — {ist_now.strftime('%d %b')}*",
+               f"_{n} deals · biggest first · ⭐ = your watchlist_", ""]
+        cur_len = sum(len(x) + 1 for x in cur); part = 1
+        for dl in deals:
+            e = "🟢 BUY" if dl["side"].upper().startswith("B") else "🔴 SELL"
+            tag = "BLOCK" if dl["kind"] == "block" else "BULK"
+            star = " ⭐" if dl["watch"] else ""
+            block = "\n".join([
+                f"{e}  *{dl['sym']}*  ·  {tag}{star}",
+                f"👤 {dl['who']}",
+                f"📦 {dl['qty']:,.0f} @ ₹{dl['px']:,.2f}    💰 *₹{dl['cr']:.1f}cr*",
+            ])
+            if cur_len + len(block) + 2 > 3500:
+                _tg_send(token, chat, "\n".join(cur), t_deals)
+                part += 1
+                cur = [f"🏦 *INSTITUTIONAL DEALS (contd. {part})*", ""]
+                cur_len = sum(len(x) + 1 for x in cur)
+            cur.append(block); cur.append("")
+            cur_len += len(block) + 2
+        _tg_send(token, chat, "\n".join(cur), t_deals)
 
     # ── FII/DII Flows message ──
     fl = d_all.get("fii_dii", [])
