@@ -15,6 +15,17 @@ from detect_core import IST, _vol, _ltp
 POLL_SECONDS = 30
 TG_COOLDOWN  = 120  # short floor only; real dedup is event-based (fresh burst since last alert)
 STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".detect_state.json")
+SIGNAL_LOG   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.jsonl")
+
+def _log_signal(rec):
+    """Append one signal record (JSONL) for forensic/precursor analysis."""
+    try:
+        rec["ts"] = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(timespec="seconds")
+        with open(SIGNAL_LOG, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:
+        print(f"[detect] log err: {e}", file=sys.stderr)
 
 def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
     """Persist detection state so a restart resumes with baselines intact."""
@@ -191,6 +202,14 @@ def main():
                                 continue
                         tg_sent[skey] = now_ts
                         tg_last_vol[skey] = b.get("total_vol", 0)
+                        _log_signal({"src": "intraday", "sym": b.get("symbol"),
+                            "strike": b.get("strike"), "otype": b.get("type"),
+                            "cat": b.get("category"), "ltp": b.get("ltp"),
+                            "vol_jump": b.get("vol_jump"), "total_vol": b.get("total_vol"),
+                            "vol_mult": b.get("vol_mult"), "cs_5m": b.get("cs_5m"),
+                            "cs_15m": b.get("cs_15m"), "oi_pct": b.get("oi_chg_pct"),
+                            "activity": b.get("activity"), "side": b.get("side"),
+                            "acc_dist": b.get("acc_dist"), "reasons": b.get("reasons")})
                         if token and _dst:
                             _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
                 else:
@@ -214,6 +233,9 @@ def main():
                         f"\U0001f4ca Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}\u00d7 avg)",
                         f"\U0001f550 {r['time']} IST",
                     ])
+                    _log_signal({"src": "crypto", "sym": r.get("symbol"),
+                        "ltp": r.get("ltp"), "vol": r.get("vol"),
+                        "vol_mult": r.get("vol_mult"), "spike_type": r.get("spike_type")})
                     if token and _dst:
                         _tg_send(token, _dst, cmsg, _topic_for("Crypto"))
             except Exception as ce:
