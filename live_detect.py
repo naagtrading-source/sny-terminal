@@ -13,7 +13,7 @@ import detect_core
 from detect_core import IST, _vol, _ltp
 
 POLL_SECONDS = 60
-TG_COOLDOWN  = 300  # per-contract alert cooldown (secs) — matches app's 5-min
+TG_COOLDOWN  = 120  # short floor only; real dedup is event-based (fresh burst since last alert)
 STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".detect_state.json")
 
 def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
@@ -152,6 +152,7 @@ def main():
             return _topic_cry
         return _topic_nse  # Index / Stock
     state, tg_sent, crypto_prev, crypto_hist, crypto_sent = _load_state()
+    tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
     tm = {}
@@ -178,7 +179,18 @@ def main():
                         skey = f"{b['symbol']}|{b['type']}|{b['strike']}"
                         if now_ts - tg_sent.get(skey, 0) < TG_COOLDOWN:
                             continue
+                        # Event-based dedup: re-alert only on a FRESH burst.
+                        # Volume traded since the last alert must itself clear
+                        # the spike bar — lingering elevation doesn't re-fire.
+                        _lastvol = tg_last_vol.get(skey, 0)
+                        if _lastvol:
+                            _fresh = b.get("total_vol", 0) - _lastvol
+                            _bar = max(b.get("avg_vol", 0), 1) * (5.0 if b.get("category") == "Commodity" else 10.0)
+                            _minj = 2000 if b.get("category") == "Commodity" else 50000
+                            if _fresh < max(_bar, _minj):
+                                continue
                         tg_sent[skey] = now_ts
+                        tg_last_vol[skey] = b.get("total_vol", 0)
                         if token and _dst:
                             _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
                 else:
