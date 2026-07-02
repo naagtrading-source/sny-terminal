@@ -10,7 +10,7 @@ import requests
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SENT_FILE = os.path.join(BASE, ".inst_alert_sent")
-MEGA_CR = 25.0  # deals >= 25cr flagged even off-watchlist
+MEGA_CR = 250.0  # only true whales off-watchlist; Nifty-50 deals always sent
 
 def _load_dotenv():
     try:
