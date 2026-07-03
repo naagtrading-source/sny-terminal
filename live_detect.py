@@ -180,9 +180,17 @@ def main():
                 if not tm or (time.time() - tm_refreshed) > 3600:
                     tm = _get_token_map()
                     tm_refreshed = time.time()
-                quotes = _get_quotes(tm)
+                # Only detect on markets currently OPEN. After 15:30 NSE closes but
+                # MCX runs to 23:30 — without this, NSE contracts kept firing (e.g.
+                # ICICIBANK options at 16:30). Filter token_map to open segments.
+                _open_tm = {}
+                for _cat, _es in tm.items():
+                    if _cat == "Commodity" and not mcx: continue
+                    if _cat in ("Index", "Stock") and not nse: continue
+                    _open_tm[_cat] = _es
+                quotes = _get_quotes(_open_tm)
                 if quotes:
-                    snap = detect_core.run_detection(tm, quotes, state)
+                    snap = detect_core.run_detection(_open_tm, quotes, state)
                     now_ts = time.time()
                     for b in snap:
                         if not b.get("is_unusual"):
