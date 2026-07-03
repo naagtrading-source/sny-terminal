@@ -23,6 +23,9 @@ MIN_VOL_JUMP_COMM = 2000   # MCX: commodities trade far lower volume; 50k never 
 def _min_jump(cat):
     return MIN_VOL_JUMP_COMM if cat == "Commodity" else MIN_VOL_JUMP
 
+MIN_JUMP_CR_OPT = 10.0   # options: burst must move >= 10cr of turnover
+MIN_JUMP_CR_FUT = 50.0   # futures: bigger notional, >= 50cr
+
 def _tod_factor(now):
     """Time-of-day threshold scaling: open/close are naturally 5-10x heavier,
     so a '10x spike' at 09:20 is routine. Stricter bar in those windows."""
@@ -276,11 +279,14 @@ def run_detection(token_map, quotes, state):
             if is_unusual and not (cs_5m or cs_15m) and not acc_dist:
                 _dir_ok = ((bias == "BULLISH" and price_day_pct >= 0.3) or
                            (bias == "BEARISH" and price_day_pct <= -0.3))
+                _min_cr = MIN_JUMP_CR_FUT if kind == "FUT" else MIN_JUMP_CR_OPT
                 if kind == "FUT":
-                    if not (vol_mult >= 40 and abs(price_day_pct) >= 0.4 and _dir_ok):
+                    if not (vol_mult >= 40 and abs(price_day_pct) >= 0.4 and _dir_ok
+                            and jump_cr >= _min_cr):
                         is_unusual = False
                 else:
-                    if not (vol_mult >= 25 and (abs(oi_pct) >= 10 or abs(price_day_pct) >= 1.0) and _dir_ok):
+                    if not (vol_mult >= 25 and (abs(oi_pct) >= 10 or abs(price_day_pct) >= 1.0)
+                            and _dir_ok and jump_cr >= _min_cr):
                         is_unusual = False
             state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp,"ltq":ltq}
 
@@ -307,8 +313,21 @@ def run_detection(token_map, quotes, state):
                     "underlying":ltp,"reasons":" · ".join(flags) if flags else "—",
                 })
             del q
-    # Sort the list by volume (highest traded first)
-    new.sort(key=lambda b: b["total_vol"], reverse=True)
+    # ── BOTH-LEGS CONFIRMATION ──
+    # When CE and PE of the SAME symbol+strike+expiry both fire this cycle, that's
+    # coordinated structure (straddle/strangle writing) — the strongest option tell.
+    flagged = [b for b in new if b.get("is_unusual") and b.get("type") in ("CE", "PE")]
+    bykey = {}
+    for b in flagged:
+        bykey.setdefault((b["symbol"], b["strike"], b["expiry"]), []).append(b)
+    for grp in bykey.values():
+        types = {b["type"] for b in grp}
+        if "CE" in types and "PE" in types:
+            for b in grp:
+                b["paired"] = True
+                b["reasons"] = "🎯 BOTH LEGS · " + b.get("reasons", "")
+    # Sort: paired first, then by volume
+    new.sort(key=lambda b: (b.get("paired", False), b["total_vol"]), reverse=True)
     return new
 
 
