@@ -40,6 +40,7 @@ def _spike_mult(cat, now):
 LARGE_VALUE_CR = 5.0       # value of jump must exceed Rs 5 crore
 OI_CHANGE_PCT  = 15.0      # OI change > 15% = significant new institutional positions
 BIG_TRADE_LOTS = 50        # single trade >= 50 lots = block print
+BLOCK_MIN_CR   = 25.0      # a live block print must also be >= this many cr
 MIN_HISTORY    = 3         # need at least 3 ticks of history before flagging unusual
 
 def interpret_activity(opt_type, oi_change, price_change):
@@ -219,10 +220,16 @@ def run_detection(token_map, quotes, state):
                 is_unusual = True
                 flags.append(f"OI {oi_pct:+.0f}%")
             _vmult = _spike_mult(cat, datetime.now(IST))
-            if (ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq and vol_jump > 0
-                    and has_history and avg > 0 and vol_jump >= avg * _vmult):
+            # ── LIVE BLOCK EXECUTION (independent of volume spike) ──
+            # A single large print IS an institutional execution happening now.
+            # Fires on its own — doesn't require the volume-spike rule.
+            block_exec = False
+            block_cr = (ltq * ltp) / 1e7 if ltq > 0 else 0
+            if (ltq >= lot * BIG_TRADE_LOTS and ltq > 0 and ltq != prev_ltq
+                    and block_cr >= BLOCK_MIN_CR):
                 is_unusual = True
-                flags.append(f"Block {ltq:,}")
+                block_exec = True
+                flags.append(f"🔨 BLOCK {ltq:,} lots (₹{block_cr:.1f}cr)")
 
             # FIX: candle spike detection — 5m/15m volume vs previous candle
             _cf = candle_spike(state.setdefault('candle_vol',{}), ikey, cat, vol_jump, datetime.now(IST))
@@ -302,6 +309,8 @@ def run_detection(token_map, quotes, state):
                     "cs_5m":cs_5m,"cs_15m":cs_15m,
                     "value_cr":round(value_cr,2),"jump_cr":round(jump_cr,2),
                     "ltq":ltq,"pressure":pressure,
+                    "block_exec":block_exec,"block_cr":round(block_cr,1),
+                    "block_lots":int(ltq/lot) if lot else 0,
                     "side":side,"side_emoji":side_emoji,
                     "acc_dist":acc_dist,"acc_emoji":acc_emoji,
                     "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),

@@ -96,6 +96,19 @@ def _tg_send(token, chat, msg, thread_id=None):
         print(f"[detect] tg err: {e}", file=sys.stderr)
 
 def _fmt_alert(b):
+    if b.get("block_exec"):
+        _lbl = f"{b['symbol']} FUT" if b["type"] == "FUT" else f"{b['symbol']} {b['strike']} {b['type']}"
+        _e = "🟢" if b.get("side") == "BUYING" else "🔴" if b.get("side") == "SELLING" else "⚪"
+        return "\n".join([
+            "🔨 *BLOCK EXECUTION*",
+            "━━━━━━━━━━━━━━━",
+            f"📌 {_lbl}",
+            f"{_e} {b.get('block_lots',0):,} lots  ·  *₹{b.get('block_cr',0):.1f}cr*",
+            f"💰 @ ₹{b.get('ltp',0):,}  ({b.get('side','?')})",
+            f"📊 vol {b.get('vol_mult',0):.1f}× · OI {b.get('oi_chg_pct',0):+.0f}%",
+            "━━━━━━━━━━━━━━━",
+            f"🕐 {b.get('time','')} IST",
+        ])
     if b["type"] == "FUT":
         label = f"{b['symbol']} FUT"
     else:
@@ -210,7 +223,7 @@ def main():
                                 continue
                         tg_sent[skey] = now_ts
                         tg_last_vol[skey] = b.get("total_vol", 0)
-                        _log_signal({"src": "intraday", "sym": b.get("symbol"),
+                        _log_signal({"src": "block_exec" if b.get("block_exec") else "intraday", "sym": b.get("symbol"),
                             "strike": b.get("strike"), "otype": b.get("type"),
                             "cat": b.get("category"), "ltp": b.get("ltp"),
                             "vol_jump": b.get("vol_jump"), "total_vol": b.get("total_vol"),
