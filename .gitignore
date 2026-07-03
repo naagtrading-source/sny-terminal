@@ -9,3 +9,4 @@ api-scrip-master.csv
 .detect_state.json
 .inst_alert_sent
 signals.jsonl
+outcomes.jsonl
