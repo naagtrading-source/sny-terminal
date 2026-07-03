@@ -56,11 +56,18 @@ def main():
         print("[inst] no telegram creds", file=sys.stderr); return
 
     today = datetime.date.today().isoformat()
+    # Deal-level dedup: track which deals + flows already sent TODAY, so the
+    # second run (20:00) sends only NEW deals published after the first (18:45),
+    # never duplicating. Resets when the date changes.
+    _sent = {"day": today, "deals": [], "flows": False}
     try:
-        if open(SENT_FILE).read().strip() == today:
-            print("[inst] already sent today", file=sys.stderr); return
+        _prev = json.loads(open(SENT_FILE).read())
+        if _prev.get("day") == today:
+            _sent = _prev
+            _sent.setdefault("deals", []); _sent.setdefault("flows", False)
     except Exception:
         pass
+    _sent_deals = set(tuple(x) for x in _sent["deals"])
 
     watch = _watched_symbols()
     proc = subprocess.run([sys.executable, "institutional_helper.py"],
@@ -92,6 +99,9 @@ def main():
                 deals.append({"kind": kind, "sym": r.get("Symbol", "?"),
                               "who": r.get("Client Name", "?"), "side": r.get("Buy/Sell", "?"),
                               "qty": qty, "px": px, "cr": cr, "watch": is_watch})
+    # drop deals already sent earlier today
+    def _dkey(d): return (d["kind"], d["sym"], d["who"], d["side"], round(d["cr"],1))
+    deals = [d for d in deals if _dkey(d) not in _sent_deals]
     n = len(deals)
     if n:
         deals.sort(key=lambda x: -x["cr"])
@@ -116,8 +126,9 @@ def main():
             cur.append(block); cur.append("")
             cur_len += len(block) + 2
         _tg_send(token, chat, "\n".join(cur), t_deals)
-    else:
-        # No qualifying deals — still confirm the check ran so silence != "broken"
+    elif not _sent_deals:
+        # No new deals AND none sent earlier today — confirm the check ran.
+        # (If deals were already sent today, stay silent — don't contradict them.)
         ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
         _tg_send(token, chat,
                  f"🏦 *No qualifying deals today*\n_{ist_now.strftime('%d %b %H:%M')} IST · "
@@ -125,7 +136,7 @@ def main():
 
     # ── FII/DII Flows message ──
     fl = d_all.get("fii_dii", [])
-    if fl:
+    if fl and not _sent["flows"]:
         flines = ["🌊 *FII / DII DAILY FLOWS*", "━━━━━━━━━━━━━━━"]
         for f in fl:
             net = _f(f.get("netValue"))
@@ -135,8 +146,12 @@ def main():
         flines.append("━━━━━━━━━━━━━━━")
         _tg_send(token, chat, "\n".join(flines), t_flows)
 
+    for d in deals:
+        _sent["deals"].append(list(_dkey(d)))
+    if fl:
+        _sent["flows"] = True
     with open(SENT_FILE, "w") as f:
-        f.write(today)
+        json.dump(_sent, f)
     print(f"[inst] sent: {n} deals, {len(fl)} flow rows", file=sys.stderr)
 
 if __name__ == "__main__":
