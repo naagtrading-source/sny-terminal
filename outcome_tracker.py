@@ -75,14 +75,20 @@ def main():
                     cur = q.get("data",{}).get("data",{}).get(seg,{}).get(str(tok),{}).get("last_price", 0)
                     break
                 time.sleep(1.5)
-            if not cur: continue
+            if not cur or cur <= 0: continue   # missing price -> skip, don't log -100%
             entry = r.get("ltp", 0)
-            if not entry: continue
+            if not entry or entry <= 0: continue
             fwd_pct = round((cur - entry) / entry * 100, 2)
-            # did price move in the signal's implied direction?
-            bias_up = (r.get("activity","") in ("LONG BUILDUP","CALL BUYING","SHORT COVERING","PUT SHORT COVER")
-                       or (r.get("side")=="BUYING"))
-            correct = (fwd_pct > 0) == bias_up
+            # did price move in the signal's implied direction? use the underlying
+            # bias (bullish->up expected, bearish->down expected). For option legs,
+            # fwd_pct is the option's own move; correctness is judged on the option
+            # going the way the label implies (buying/covering up, writing/unwind down).
+            _act = r.get("activity","")
+            _bull_opt = _act in ("CALL BUYING","PUT SHORT COVER","CALL SHORT COVER","LONG BUILDUP","SHORT COVERING")
+            _bear_opt = _act in ("PUT BUYING","CALL WRITING","PUT WRITING","SHORT BUILDUP","LONG UNWINDING","CALL LONG UNWIND","PUT LONG UNWIND")
+            if _bull_opt:   correct = fwd_pct > 0
+            elif _bear_opt: correct = fwd_pct < 0
+            else:           correct = None  # neutral/unclear
             f.write(json.dumps({"sig_ts": r["ts"], "horizon_min": horizon,
                 "sym": r.get("sym"), "strike": r.get("strike"), "otype": r.get("otype"),
                 "activity": r.get("activity"), "vol_mult": r.get("vol_mult"),
