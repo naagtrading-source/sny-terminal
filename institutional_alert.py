@@ -116,6 +116,12 @@ def main():
             cur.append(block); cur.append("")
             cur_len += len(block) + 2
         _tg_send(token, chat, "\n".join(cur), t_deals)
+    else:
+        # No qualifying deals — still confirm the check ran so silence != "broken"
+        ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        _tg_send(token, chat,
+                 f"🏦 *No qualifying deals today*\n_{ist_now.strftime('%d %b %H:%M')} IST · "
+                 f"checked Nifty-50 + ₹250cr+ whales — none found_", t_deals)
 
     # ── FII/DII Flows message ──
     fl = d_all.get("fii_dii", [])
