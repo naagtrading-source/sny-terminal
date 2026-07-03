@@ -185,6 +185,11 @@ def run_detection(token_map, quotes, state):
             # produce absurd percentages (+18900%). Below 500 OI, treat as n/a.
             oi_pct = ((oi - _oi0) / _oi0 * 100) if _oi0 >= 500 else 0
             price_chg = ltp - prev_ltp
+            # Day-based price direction (vs open) — the real directional read.
+            # tick price_chg wiggles ~0; day change confirms whether a move is real.
+            _ohlc = q.get("ohlc") or {}
+            _open = _f(_ohlc.get("open") or _ohlc.get("o") or 0)
+            price_day_pct = ((ltp - _open) / _open * 100) if _open > 0 else 0.0
 
             # ── UNUSUAL activity gate — must be abnormal vs THIS contract's norm ──
             is_unusual = False; reasons = []
@@ -246,7 +251,7 @@ def run_detection(token_map, quotes, state):
             # OI is building. Big players absorbing supply/demand without moving price.
             acc_dist = ""; acc_emoji = ""
             price_pct = abs(price_chg / ltp * 100) if ltp > 0 else 0
-            is_flat = price_pct < 0.5          # price moved less than 0.5%
+            is_flat = abs(price_day_pct) < 0.5   # flat on the DAY, not just this tick
             # acc/dist must ALSO clear the absolute volume floor + history —
             # 14x of a tiny average is noise, not institutional absorption
             huge_vol = (vol_mult >= VOL_SPIKE_MULT and has_history
@@ -263,6 +268,20 @@ def run_detection(token_map, quotes, state):
                 is_unusual = True
                 flags.append(f"{acc_emoji} {acc_dist} (flat price + {vol_mult:.1f}× vol + OI{oi_pct:+.0f}%)")
 
+            # ── CONFIRMATION FILTER: volume alone isn't tradeable ──
+            # Options: vol>=25x AND (real OI>=10% OR strong day-move) AND direction
+            #   confirms. Futures: OI% structurally weak, so vol>=40x AND a real
+            #   day-move (>=0.4%) in the label's direction. Candle & acc/dist
+            #   signals keep their own paths.
+            if is_unusual and not (cs_5m or cs_15m) and not acc_dist:
+                _dir_ok = ((bias == "BULLISH" and price_day_pct >= 0.3) or
+                           (bias == "BEARISH" and price_day_pct <= -0.3))
+                if kind == "FUT":
+                    if not (vol_mult >= 40 and abs(price_day_pct) >= 0.4 and _dir_ok):
+                        is_unusual = False
+                else:
+                    if not (vol_mult >= 25 and (abs(oi_pct) >= 10 or abs(price_day_pct) >= 1.0) and _dir_ok):
+                        is_unusual = False
             state["prev"][ikey] = {"vol":vol,"oi":oi,"ltp":ltp,"ltq":ltq}
 
             # Show every contract that has real volume (it's a LIST).
@@ -281,6 +300,7 @@ def run_detection(token_map, quotes, state):
                     "acc_dist":acc_dist,"acc_emoji":acc_emoji,
                     "oi":oi,"oi_chg":oi_chg,"oi_chg_pct":round(oi_pct,1),
                     "price_chg":round(price_chg,2),
+                    "price_day_pct":round(price_day_pct,2),
                     "activity":label,"emoji":emoji,"bias":bias,
                     "is_unusual":is_unusual,
                     "trend":f"{emoji} {label}",
