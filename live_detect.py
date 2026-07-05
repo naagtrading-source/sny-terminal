@@ -12,9 +12,20 @@ sys.path.insert(0, BASE)
 import detect_core
 from detect_core import IST, _vol, _ltp
 
-POLL_SECONDS = 60
-TG_COOLDOWN  = 300  # per-contract alert cooldown (secs) — matches app's 5-min
+POLL_SECONDS = 60  # 30s doubled API rate -> Dhan throttle -> bisect retry storm -> 90s timeouts every cycle
+TG_COOLDOWN  = 120  # short floor only; real dedup is event-based (fresh burst since last alert)
 STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".detect_state.json")
+SIGNAL_LOG   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.jsonl")
+
+def _log_signal(rec):
+    """Append one signal record (JSONL) for forensic/precursor analysis."""
+    try:
+        rec["ts"] = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(timespec="seconds")
+        with open(SIGNAL_LOG, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:
+        print(f"[detect] log err: {e}", file=sys.stderr)
 
 def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
     """Persist detection state so a restart resumes with baselines intact."""
@@ -85,6 +96,19 @@ def _tg_send(token, chat, msg, thread_id=None):
         print(f"[detect] tg err: {e}", file=sys.stderr)
 
 def _fmt_alert(b):
+    if b.get("block_exec"):
+        _lbl = f"{b['symbol']} FUT" if b["type"] == "FUT" else f"{b['symbol']} {b['strike']} {b['type']}"
+        _e = "🟢" if b.get("side") == "BUYING" else "🔴" if b.get("side") == "SELLING" else "⚪"
+        return "\n".join([
+            "🔨 *BLOCK EXECUTION*",
+            "━━━━━━━━━━━━━━━",
+            f"📌 {_lbl}",
+            f"{_e} {b.get('block_lots',0):,} lots  ·  *₹{b.get('block_cr',0):.1f}cr*",
+            f"💰 @ ₹{b.get('ltp',0):,}  ({b.get('side','?')})",
+            f"📊 vol {b.get('vol_mult',0):.1f}× · OI {b.get('oi_chg_pct',0):+.0f}%",
+            "━━━━━━━━━━━━━━━",
+            f"🕐 {b.get('time','')} IST",
+        ])
     if b["type"] == "FUT":
         label = f"{b['symbol']} FUT"
     else:
@@ -152,6 +176,7 @@ def main():
             return _topic_cry
         return _topic_nse  # Index / Stock
     state, tg_sent, crypto_prev, crypto_hist, crypto_sent = _load_state()
+    tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
     tm = {}
@@ -168,9 +193,17 @@ def main():
                 if not tm or (time.time() - tm_refreshed) > 3600:
                     tm = _get_token_map()
                     tm_refreshed = time.time()
-                quotes = _get_quotes(tm)
+                # Only detect on markets currently OPEN. After 15:30 NSE closes but
+                # MCX runs to 23:30 — without this, NSE contracts kept firing (e.g.
+                # ICICIBANK options at 16:30). Filter token_map to open segments.
+                _open_tm = {}
+                for _cat, _es in tm.items():
+                    if _cat == "Commodity" and not mcx: continue
+                    if _cat in ("Index", "Stock") and not nse: continue
+                    _open_tm[_cat] = _es
+                quotes = _get_quotes(_open_tm)
                 if quotes:
-                    snap = detect_core.run_detection(tm, quotes, state)
+                    snap = detect_core.run_detection(_open_tm, quotes, state)
                     now_ts = time.time()
                     for b in snap:
                         if not b.get("is_unusual"):
@@ -178,9 +211,49 @@ def main():
                         skey = f"{b['symbol']}|{b['type']}|{b['strike']}"
                         if now_ts - tg_sent.get(skey, 0) < TG_COOLDOWN:
                             continue
+                        # Event-based dedup: re-alert only on a FRESH burst.
+                        # Volume traded since the last alert must itself clear
+                        # the spike bar — lingering elevation doesn't re-fire.
+                        _lastvol = tg_last_vol.get(skey, 0)
+                        if _lastvol:
+                            _fresh = b.get("total_vol", 0) - _lastvol
+                            _bar = max(b.get("avg_vol", 0), 1) * (5.0 if b.get("category") == "Commodity" else 10.0)
+                            _minj = 2000 if b.get("category") == "Commodity" else 50000
+                            if _fresh < max(_bar, _minj):
+                                continue
                         tg_sent[skey] = now_ts
+                        tg_last_vol[skey] = b.get("total_vol", 0)
+                        _log_signal({"src": "block_exec" if b.get("block_exec") else "intraday", "sym": b.get("symbol"),
+                            "strike": b.get("strike"), "otype": b.get("type"),
+                            "cat": b.get("category"), "ltp": b.get("ltp"),
+                            "vol_jump": b.get("vol_jump"), "total_vol": b.get("total_vol"),
+                            "vol_mult": b.get("vol_mult"), "cs_5m": b.get("cs_5m"),
+                            "cs_15m": b.get("cs_15m"), "oi_pct": b.get("oi_chg_pct"), "price_day_pct": b.get("price_day_pct"), "price_chg": b.get("price_chg"), "jump_cr": b.get("jump_cr"), "value_cr": b.get("value_cr"), "paired": b.get("paired", False),
+                            "activity": b.get("activity"), "side": b.get("side"),
+                            "acc_dist": b.get("acc_dist"), "reasons": b.get("reasons")})
                         if token and _dst:
                             _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
+                    # ── depth walls (persistent resting institutional orders) ──
+                    try:
+                        walls = detect_core.detect_walls(tm, quotes, state.setdefault("walls", {}))
+                        for w in walls:
+                            e = "🟢" if w["side"] == "buy" else "🔴"
+                            wmsg = "\n".join([
+                                f"🧱 *DEPTH WALL* {e}",
+                                "━━━━━━━━━━━━━━━",
+                                f"📌 {w['sym']}",
+                                f"{e} {w['side'].upper()} wall: {w['qty']:,} ({w['lots']} lots)",
+                                f"💰 @ ₹{w['price']:,}  (LTP ₹{w['ltp']:,})",
+                                f"📊 {w['x_book']}× rest of book · holding {w['persist_cycles']} cycles",
+                                "━━━━━━━━━━━━━━━",
+                            ])
+                            _log_signal({"src": "wall", "sym": w["sym"], "side": w["side"],
+                                "qty": w["qty"], "lots": w["lots"], "x_book": w["x_book"],
+                                "price": w["price"], "ltp": w["ltp"]})
+                            if token and _dst:
+                                _tg_send(token, _dst, wmsg, _topic_for(w.get("category")))
+                    except Exception as we:
+                        print(f"[detect] wall err: {we}", file=sys.stderr)
                 else:
                     print("[detect] no quotes this cycle", file=sys.stderr)
 
@@ -202,6 +275,9 @@ def main():
                         f"\U0001f4ca Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}\u00d7 avg)",
                         f"\U0001f550 {r['time']} IST",
                     ])
+                    _log_signal({"src": "crypto", "sym": r.get("symbol"),
+                        "ltp": r.get("ltp"), "vol": r.get("vol"),
+                        "vol_mult": r.get("vol_mult"), "spike_type": r.get("spike_type")})
                     if token and _dst:
                         _tg_send(token, _dst, cmsg, _topic_for("Crypto"))
             except Exception as ce:

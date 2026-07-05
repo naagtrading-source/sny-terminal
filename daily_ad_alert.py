@@ -9,6 +9,16 @@ import os, sys, json, subprocess, datetime
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SENT_FILE = os.path.join(BASE, ".ad_alert_sent")
+SIGNAL_LOG = os.path.join(BASE, "signals.jsonl")
+
+def _log_signal(rec):
+    try:
+        rec["ts"] = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(timespec="seconds")
+        with open(SIGNAL_LOG, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:
+        print(f"[ad-alert] log err: {e}", file=sys.stderr)
 
 def _load_dotenv():
     try:
@@ -116,6 +126,10 @@ def main():
             "━━━━━━━━━━━━━━━",
             f"🕐 {now_str} IST · daily timeframe",
         ])
+        _log_signal({"src": "daily_ad", "sym": sym, "direction": h.get("direction"),
+            "today_vol": h.get("today_vol"), "x_avg": h.get("x_avg"),
+            "rank_days": h.get("rank_days"), "chg_pct": h.get("chg_pct"),
+            "close": h.get("close")})
         _tg_send(token, _dst, msg, _thread)
         new_syms.add(_key)
         sent_count += 1
