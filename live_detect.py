@@ -27,7 +27,7 @@ def _log_signal(rec):
     except Exception as e:
         print(f"[detect] log err: {e}", file=sys.stderr)
 
-def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
+def _save_state(state, tg_sent):
     """Persist detection state so a restart resumes with baselines intact."""
     try:
         import time as _t
@@ -38,8 +38,6 @@ def _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent):
             "candle_vol": state.get("candle_vol", {}),
             "day_oi": state.get("day_oi", {}),
             "tg_sent": {k: v for k, v in tg_sent.items() if v > cutoff},
-            "crypto_prev": crypto_prev, "crypto_hist": crypto_hist,
-            "crypto_sent": crypto_sent,
         }
         with open(STATE_FILE, "w") as f:
             json.dump(blob, f)
@@ -55,12 +53,10 @@ def _load_state():
                  "volhist": _dd(list, b.get("volhist", {})),
                  "candle_vol": b.get("candle_vol", {}),
                  "day_oi": b.get("day_oi", {})}
-        return (state, b.get("tg_sent", {}), b.get("crypto_prev", {}),
-                b.get("crypto_hist", {}), b.get("crypto_sent", {}))
+        return (state, b.get("tg_sent", {}))
     except Exception:
         from collections import defaultdict as _dd
-        return ({"prev": _dd(dict), "volhist": _dd(list), "candle_vol": {}},
-                {}, {}, {}, {})
+        return ({"prev": _dd(dict), "volhist": _dd(list), "candle_vol": {}}, {})
 
 def _load_dotenv():
     try:
@@ -164,7 +160,8 @@ def main():
     _group = os.environ.get("TG_GROUP_CHAT", "")
     _topic_nse  = os.environ.get("TG_TOPIC_NSE", "")
     _topic_comm = os.environ.get("TG_TOPIC_COMMODITY", "")
-    _topic_cry  = os.environ.get("TG_TOPIC_CRYPTO", "")
+    _topic_gold = os.environ.get("TG_TOPIC_GOLD", "")
+    _topic_goldform = os.environ.get("TG_TOPIC_GOLDFORM", "")
     # If a group is configured, send there with per-market topics; else fallback to chat.
     _dst = _group if _group else chat
     def _topic_for(cat):
@@ -172,11 +169,15 @@ def main():
             return None
         if cat == "Commodity":
             return _topic_comm
-        if cat == "Crypto":
-            return _topic_cry
+        if cat == "GoldForm":
+            return _topic_goldform
+        if cat == "Gold":
+            return _topic_gold
         return _topic_nse  # Index / Stock
-    state, tg_sent, crypto_prev, crypto_hist, crypto_sent = _load_state()
+    state, tg_sent = _load_state()
     tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
+    gold_sent = {}  # {zkey: 1} — gold-retest alert dedup
+    goldform_sent = {}  # {fkey: 1} — gold-formation alert dedup
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
     tm = {}
@@ -257,35 +258,49 @@ def main():
                 else:
                     print("[detect] no quotes this cycle", file=sys.stderr)
 
-            # ── crypto (OKX, 24/7) ──
-            try:
-                from crypto_helper import detect_spikes
-                cresults, crypto_prev, crypto_hist = detect_spikes(crypto_prev, crypto_hist)
-                for r in cresults:
-                    csk = r["symbol"]
-                    if crypto_sent.get(csk) == r.get("vol"):
-                        continue
-                    crypto_sent[csk] = r.get("vol")
-                    stype = "\u26a1" if r.get("spike_type") == "tick" else "\U0001f4ca"
-                    cmsg = "\n".join([
-                        f"{stype} *CRYPTO VOLUME SPIKE*",
-                        "\u2501"*8,
-                        f"\U0001fa99 {r['symbol']}",
-                        f"\U0001f4b5 ${r['ltp']:,.4f}",
-                        f"\U0001f4ca Vol: {r['vol']:,.0f}  ({r['vol_mult']:.1f}\u00d7 avg)",
-                        f"\U0001f550 {r['time']} IST",
-                    ])
-                    _log_signal({"src": "crypto", "sym": r.get("symbol"),
-                        "ltp": r.get("ltp"), "vol": r.get("vol"),
-                        "vol_mult": r.get("vol_mult"), "spike_type": r.get("spike_type")})
-                    if token and _dst:
-                        _tg_send(token, _dst, cmsg, _topic_for("Crypto"))
-            except Exception as ce:
-                print(f"[detect] crypto err: {ce}", file=sys.stderr)
+            # ── NSE gold-block retest scan (15m, Nifty-50) ──
+            if nse:
+                try:
+                    gp = subprocess.run([sys.executable, "gold_helper.py"],
+                                        capture_output=True, text=True, cwd=BASE, timeout=150)
+                    galerts = json.loads(gp.stdout).get("alerts", [])
+                    galerts_form = json.loads(gp.stdout).get("formations", [])
+                    for a in galerts:
+                        zk = a.get("zkey")
+                        if not zk or gold_sent.get(zk):
+                            continue
+                        gold_sent[zk] = 1
+                        arrow = "\U0001F7E2 LONG" if a["dir"]==1 else "\U0001F534 SHORT"
+                        side = "buy" if a["dir"]==1 else "sell"
+                        gmsg = (f"\u2605 *GOLD RETEST*  {arrow}  {a['symbol']} [{a['tf']}]\n"
+                                f"grade {a['grade']} {a['score']} | zone {a['bot']}-{a['top']}\n"
+                                f"close {a['price']} | {a['buy_pct']:.0f}% {side}-close | vol {a['vol_x']}\u00d7")
+                        _log_signal({"src":"gold_retest","sym":a["symbol"],"tf":a["tf"],
+                            "dir":a["dir"],"grade":a["grade"],"score":a["score"],
+                            "zone_bot":a["bot"],"zone_top":a["top"],"price":a["price"],
+                            "buy_pct":a["buy_pct"],"vol_x":a["vol_x"]})
+                        if token and _dst:
+                            _tg_send(token, _dst, gmsg, _topic_for("Gold"))
+                    for fo in galerts_form:
+                        fk = fo.get("fkey")
+                        if not fk or goldform_sent.get(fk):
+                            continue
+                        goldform_sent[fk] = 1
+                        farrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
+                        fmsg = (f"\u2b50 *GOLD FORMED*  {farrow}  {fo['symbol']} [{fo['tf']}]\n"
+                                f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}")
+                        _log_signal({"src":"gold_form","sym":fo["symbol"],"tf":fo["tf"],
+                            "dir":fo["dir"],"grade":fo["grade"],"score":fo["score"],
+                            "zone_bot":fo["bot"],"zone_top":fo["top"]})
+                        if token and _dst:
+                            _tg_send(token, _dst, fmsg, _topic_for("GoldForm"))
+                except Exception as ge:
+                    print(f"[detect] gold err: {ge}", file=sys.stderr)
+
         except Exception as e:
             print(f"[detect] loop err: {e}", file=sys.stderr)
         if time.time() - _last_save > 300:
-            _save_state(state, tg_sent, crypto_prev, crypto_hist, crypto_sent)
+            _save_state(state, tg_sent)
             _last_save = time.time()
         time.sleep(POLL_SECONDS)
 

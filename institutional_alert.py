@@ -51,7 +51,6 @@ def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat  = os.environ.get("TG_GROUP_CHAT") or os.environ.get("TELEGRAM_CHAT_ID", "")
     t_deals = os.environ.get("TG_TOPIC_DEALS", "")
-    t_flows = os.environ.get("TG_TOPIC_FLOWS", "")
     if not token or not chat:
         print("[inst] no telegram creds", file=sys.stderr); return
 
@@ -134,25 +133,12 @@ def main():
                  f"🏦 *No qualifying deals today*\n_{ist_now.strftime('%d %b %H:%M')} IST · "
                  f"checked Nifty-50 + ₹250cr+ whales — none found_", t_deals)
 
-    # ── FII/DII Flows message ──
-    fl = d_all.get("fii_dii", [])
-    if fl and not _sent["flows"]:
-        flines = ["🌊 *FII / DII DAILY FLOWS*", "━━━━━━━━━━━━━━━"]
-        for f in fl:
-            net = _f(f.get("netValue"))
-            e = "🟢" if net >= 0 else "🔴"
-            flines.append(f"{e} *{f.get('category','?')}*  net ₹{net:,.0f}cr")
-            flines.append(f"   buy ₹{_f(f.get('buyValue')):,.0f}cr · sell ₹{_f(f.get('sellValue')):,.0f}cr  ({f.get('date','')})")
-        flines.append("━━━━━━━━━━━━━━━")
-        _tg_send(token, chat, "\n".join(flines), t_flows)
 
     for d in deals:
         _sent["deals"].append(list(_dkey(d)))
-    if fl:
-        _sent["flows"] = True
     with open(SENT_FILE, "w") as f:
         json.dump(_sent, f)
-    print(f"[inst] sent: {n} deals, {len(fl)} flow rows", file=sys.stderr)
+    print(f"[inst] sent: {n} deals", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
