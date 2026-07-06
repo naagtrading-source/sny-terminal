@@ -98,7 +98,97 @@ def main():
                 "measured_at": now.isoformat(timespec="seconds")}) + "\n")
             wrote += 1
             time.sleep(0.3)
+    _measure_gold(now, done)
     print(f"[outcome] recorded {wrote} forward returns")
+
+
+def _measure_gold(now, done):
+    """Separate pass: measure gold_retest/gold_form signals on the UNDERLYING.
+    Entry = signal price (retest) or zone mid (formation). Correct = underlying
+    moved the block's direction after the horizon. Uses intraday last close."""
+    import datetime as _dt
+    try:
+        from gold_retest import NIFTY50, INDICES
+    except Exception:
+        return
+    # collect recent gold signals (last 130 min so a 60-min horizon can resolve)
+    gold = []
+    try:
+        for line in open(SIG):
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get("src") not in ("gold_retest", "gold_form"): continue
+            try:
+                sts = _dt.datetime.fromisoformat(r["ts"])
+            except Exception: continue
+            age = (now - sts).total_seconds() / 60.0
+            if 55 <= age <= 130:            # ready for the 60-min horizon
+                gold.append((r, age))
+    except FileNotFoundError:
+        return
+    if not gold:
+        return
+    # gold-specific dedup: (sig_ts, horizon, src) from existing gold rows
+    gdone = set()
+    if os.path.exists(OUT):
+        for line in open(OUT):
+            try:
+                o = json.loads(line)
+                if o.get("src") in ("gold_retest", "gold_form"):
+                    gdone.add((o["sig_ts"], o["horizon_min"], o["src"]))
+            except Exception:
+                pass
+    from dhanhq import DhanContext, dhanhq
+    ctx = DhanContext(os.environ["DHAN_CLIENT_ID"].strip(), os.environ["DHAN_ACCESS_TOKEN"].strip())
+    dhan = dhanhq(ctx)
+    to = _dt.date.today().isoformat()
+    frm = (_dt.date.today() - _dt.timedelta(days=2)).isoformat()
+
+    def _last_close(sym):
+        if sym in INDICES:
+            ix = INDICES[sym]; sid, seg, inst = ix["id"], ix["seg"], ix["inst"]
+        elif sym in NIFTY50:
+            sid, seg, inst = NIFTY50[sym], "NSE_EQ", "EQUITY"
+        else:
+            return 0
+        try:
+            r = dhan.intraday_minute_data(security_id=str(sid), exchange_segment=seg,
+                                          instrument_type=inst, from_date=frm, to_date=to, interval=1)
+            c = (r.get("data") or {}).get("close") or []
+            return float(c[-1]) if c else 0
+        except Exception:
+            return 0
+
+    import time as _t
+    wrote = 0
+    with open(OUT, "a") as f:
+        for r, age in gold:
+            horizon = 60
+            if (r["ts"], horizon, r.get("src")) in gdone:
+                continue
+            sym = r.get("sym")
+            direction = r.get("dir", 0)
+            if r.get("src") == "gold_retest":
+                entry = r.get("price", 0)
+            else:  # formation: zone midpoint
+                entry = (r.get("zone_top", 0) + r.get("zone_bot", 0)) / 2
+            if not entry or entry <= 0:
+                continue
+            cur = _last_close(sym)
+            _t.sleep(0.2)
+            if not cur or cur <= 0:
+                continue
+            fwd_pct = round((cur - entry) / entry * 100, 2)
+            correct = (fwd_pct > 0) if direction == 1 else (fwd_pct < 0) if direction == -1 else None
+            f.write(json.dumps({"sig_ts": r["ts"], "horizon_min": horizon,
+                "src": r.get("src"), "sym": sym, "tf": r.get("tf"),
+                "dir": direction, "grade": r.get("grade"), "score": r.get("score"),
+                "entry": entry, "now": cur, "fwd_pct": fwd_pct,
+                "direction_correct": correct,
+                "measured_at": now.isoformat(timespec="seconds")}) + "\n")
+            wrote += 1
+    print(f"[outcome] recorded {wrote} gold forward returns")
+
 
 if __name__ == "__main__":
     main()
