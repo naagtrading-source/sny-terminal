@@ -83,12 +83,24 @@ def main():
             # bias (bullish->up expected, bearish->down expected). For option legs,
             # fwd_pct is the option's own move; correctness is judged on the option
             # going the way the label implies (buying/covering up, writing/unwind down).
-            _act = r.get("activity","")
-            _bull_opt = _act in ("CALL BUYING","PUT SHORT COVER","CALL SHORT COVER","LONG BUILDUP","SHORT COVERING")
-            _bear_opt = _act in ("PUT BUYING","CALL WRITING","PUT WRITING","SHORT BUILDUP","LONG UNWINDING","CALL LONG UNWIND","PUT LONG UNWIND")
-            if _bull_opt:   correct = fwd_pct > 0
-            elif _bear_opt: correct = fwd_pct < 0
-            else:           correct = None  # neutral/unclear
+            # Direction judged by the detector's own bias (bullish->expect up).
+            # FUT signals: fwd_pct IS the underlying's move, so this is exact.
+            # Option signals (no logged underlying): fwd_pct is the option's move;
+            #   for a bullish-bias CALL that's aligned, for a bearish-bias PUT the
+            #   option rising also means underlying falling — so options remain
+            #   approximate until underlying-at-signal is logged. Use bias if set.
+            _bias = r.get("bias")
+            _is_fut = r.get("otype") == "FUT" or r.get("strike") == "FUT"
+            if _bias == "BULLISH":
+                correct = fwd_pct > 0 if _is_fut else None
+            elif _bias == "BEARISH":
+                correct = fwd_pct < 0 if _is_fut else None
+            else:
+                # legacy records without bias: fall back to old activity guess (FUT only)
+                _act = r.get("activity","")
+                if _is_fut and _act in ("LONG BUILDUP","SHORT COVERING"): correct = fwd_pct > 0
+                elif _is_fut and _act in ("SHORT BUILDUP","LONG UNWINDING"): correct = fwd_pct < 0
+                else: correct = None
             f.write(json.dumps({"sig_ts": r["ts"], "horizon_min": horizon,
                 "sym": r.get("sym"), "strike": r.get("strike"), "otype": r.get("otype"),
                 "activity": r.get("activity"), "vol_mult": r.get("vol_mult"),

@@ -234,7 +234,7 @@ def main():
                             "vol_jump": b.get("vol_jump"), "total_vol": b.get("total_vol"),
                             "vol_mult": b.get("vol_mult"), "cs_5m": b.get("cs_5m"),
                             "cs_15m": b.get("cs_15m"), "oi_pct": b.get("oi_chg_pct"), "price_day_pct": b.get("price_day_pct"), "price_chg": b.get("price_chg"), "jump_cr": b.get("jump_cr"), "value_cr": b.get("value_cr"), "paired": b.get("paired", False),
-                            "activity": b.get("activity"), "side": b.get("side"),
+                            "activity": b.get("activity"), "bias": b.get("bias"), "side": b.get("side"),
                             "acc_dist": b.get("acc_dist"), "reasons": b.get("reasons")})
                         if token and _dst:
                             _tg_send(token, _dst, _fmt_alert(b), _topic_for(b.get("category")))
