@@ -162,6 +162,7 @@ def main():
     _topic_comm = os.environ.get("TG_TOPIC_COMMODITY", "")
     _topic_gold = os.environ.get("TG_TOPIC_GOLD", "")
     _topic_goldform = os.environ.get("TG_TOPIC_GOLDFORM", "")
+    _topic_gold100 = os.environ.get("TG_TOPIC_GOLD100", "")
     # If a group is configured, send there with per-market topics; else fallback to chat.
     _dst = _group if _group else chat
     def _topic_for(cat):
@@ -169,6 +170,8 @@ def main():
             return None
         if cat == "Commodity":
             return _topic_comm
+        if cat == "Gold100":
+            return _topic_gold100
         if cat == "GoldForm":
             return _topic_goldform
         if cat == "Gold":
@@ -178,6 +181,7 @@ def main():
     tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
     gold_sent = {}  # {zkey: 1} — gold-retest alert dedup
     goldform_sent = {}  # {fkey: 1} — gold-formation alert dedup
+    gold100_sent = {}  # {fkey: 1} — perfect-100 alert dedup
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
     tm = {}
@@ -294,6 +298,14 @@ def main():
                             "zone_bot":fo["bot"],"zone_top":fo["top"]})
                         if token and _dst:
                             _tg_send(token, _dst, fmsg, _topic_for("GoldForm"))
+                        if fo.get("score") == 100 and not gold100_sent.get(fk):
+                            gold100_sent[fk] = 1
+                            p_arrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
+                            pmsg = (f"\u2b50\u2b50\u2b50 *PERFECT 100 GOLD*  {p_arrow}  {fo['symbol']} [{fo['tf']}]\n"
+                                    f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}\n"
+                                    f"_all 6 confluences hit_")
+                            if token and _dst:
+                                _tg_send(token, _dst, pmsg, _topic_for("Gold100"))
                 except Exception as ge:
                     print(f"[detect] gold err: {ge}", file=sys.stderr)
 
