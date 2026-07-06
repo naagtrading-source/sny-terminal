@@ -86,7 +86,7 @@ def _grade(s):
 
 
 def score_block(bars, *, trend_len=200, pivot_len=8, ob_search=6, atr_len=14,
-                vol_len=20, vol_mult=2.0, delta_thr=55.0, disp_thr=1.5,
+                vol_len=20, vol_mult=2.0, delta_thr=60.0, disp_thr=1.5,
                 range_len=50, require_trend=True, min_score=70):
     n = len(bars)
     need = max(trend_len, range_len, pivot_len + 1) + 3
