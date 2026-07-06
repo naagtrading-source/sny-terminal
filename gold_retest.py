@@ -1,50 +1,24 @@
-"""
-gold_retest.py -- gold-block retest alerts for sny-bot (NSE Nifty-50 + MCX).
-
-Fires a Telegram alert when:
-  1. a GOLD block exists  (an A/A+ order block, score >= 75, from ob_score), AND
-  2. price RETESTS it      (a later candle's range re-enters the block zone), AND
-  3. a STRONG-DELTA candle CLOSES there, delta aligned with the block direction.
-
-Delta on NSE/MCX is the close-position proxy (Dhan has no intrabar buy/sell):
-  buy%  = (close - low) / (high - low) * 100
-  A candle closing near its high = buy-dominant; near its low = sell-dominant.
-  This proxy is weakest on choppy candles, but the retest-at-a-zone filter throws
-  those out -- a decisive close AT a known level is exactly where it's trustworthy.
-
-Timeframes: 5m and 15m. Universe: Nifty-50 (NSE) + MCX commodities.
-Route NSE alerts to topic 3, MCX to topic 4.
-
-Design for the e2-micro:
-  * Detection is pure-python (imports ob_score, no pandas/numpy).
-  * The detector holds gold-block state across polls; feed it closed candles.
-  * Only do work when a NEW candle has closed (see mark_and_check_new_bar) so
-    you are NOT re-scanning every 60s -- a 5m symbol is touched ~once per 5 min.
-  * Bars can be built two ways (see bottom): seed from Dhan intraday history,
-    or aggregate your existing 60s quote polls into 5m/15m with aggregate_1m().
-"""
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence, List, Dict
 from ob_score import Bar, score_block
 
 
-# ─────────────────────────────────────────────────────────────
 @dataclass
 class GoldBlock:
-    direction: int        # +1 bullish, -1 bearish
+    direction: int
     top: float
     bot: float
     score: int
     grade: str
-    formed_ts: int        # timestamp (or bar count) when it formed
+    formed_ts: int
     alerted: bool = False
 
 
 @dataclass
 class RetestAlert:
     symbol: str
-    tf: str               # "5m" / "15m"
+    tf: str
     direction: int
     grade: str
     score: int
@@ -55,9 +29,7 @@ class RetestAlert:
     vol_x: float
 
 
-# ─────────────────────────────────────────────────────────────
-def close_pos_delta(bar: Bar) -> float:
-    """Buy% proxy from where close sits in the bar's range (0..100)."""
+def close_pos_delta(bar):
     rng = bar.h - bar.l
     if rng <= 0:
         return 50.0
@@ -65,25 +37,18 @@ def close_pos_delta(bar: Bar) -> float:
 
 
 class GoldRetestDetector:
-    """
-    One detector instance for everything. Call update() per symbol+tf with the
-    latest window of CLOSED candles (oldest -> newest). Returns any RetestAlert
-    that fired on the newest candle, else None.
-    """
     def __init__(self, *, min_score=75, retest_delta=65.0, retest_vol_mult=1.0,
                  zone_buffer_atr=0.15, max_blocks=6, score_kwargs=None):
-        self.min_score = min_score          # gold = A/A+ (>=75)
-        self.retest_delta = retest_delta    # candle must be this buy%/sell% dominant
+        self.min_score = min_score
+        self.retest_delta = retest_delta
         self.retest_vol_mult = retest_vol_mult
         self.zone_buffer_atr = zone_buffer_atr
         self.max_blocks = max_blocks
-        # score_block tuning per your indicator; lighter warm-up for intraday
         self.score_kwargs = score_kwargs or dict(trend_len=120, range_len=50,
-                                                  vol_mult=2.0, min_score=75)
-        self._blocks: Dict[str, List[GoldBlock]] = {}
-        self._last_ts: Dict[str, int] = {}
+                                                 vol_mult=2.0, min_score=75)
+        self._blocks = {}
+        self._last_ts = {}
 
-    # -- helpers --
     def _key(self, symbol, tf):
         return f"{symbol}|{tf}"
 
@@ -92,9 +57,7 @@ class GoldRetestDetector:
         w = [b.vol for b in bars[-n:]]
         return sum(w) / len(w) if w else 0.0
 
-    def mark_and_check_new_bar(self, symbol, tf, newest_ts) -> bool:
-        """Return True only when newest_ts is newer than last seen for this key.
-        Use this to skip work when no new candle has closed."""
+    def mark_and_check_new_bar(self, symbol, tf, newest_ts):
         k = self._key(symbol, tf)
         prev = self._last_ts.get(k)
         if prev is not None and newest_ts <= prev:
@@ -102,19 +65,15 @@ class GoldRetestDetector:
         self._last_ts[k] = newest_ts
         return True
 
-    # -- main --
-    def update(self, symbol: str, tf: str, bars: Sequence[Bar],
-               newest_ts: int) -> Optional[RetestAlert]:
+    def update(self, symbol, tf, bars, newest_ts):
         k = self._key(symbol, tf)
         blocks = self._blocks.setdefault(k, [])
         if len(bars) < 5:
             return None
         cur = bars[-1]
 
-        # 1) register a fresh GOLD block if the newest bar just formed one
         blk = score_block(bars, **self.score_kwargs)
         if blk is not None and blk.score >= self.min_score:
-            # dedup: skip if a same-direction block already overlaps this zone
             dup = any(gb.direction == blk.direction and
                       blk.bot <= gb.top and gb.bot <= blk.top for gb in blocks)
             if not dup:
@@ -123,54 +82,39 @@ class GoldRetestDetector:
                 if len(blocks) > self.max_blocks:
                     blocks.pop(0)
 
-        # 2) evaluate retest / mitigation against existing blocks
         atr = self._atr(bars)
         buf = atr * self.zone_buffer_atr
         v_avg = self._avg_vol(bars)
-        fired: Optional[RetestAlert] = None
+        fired = None
 
         for gb in list(blocks):
-            # mitigation: price closed clean through the far side -> drop it
             if (gb.direction == 1 and cur.c < gb.bot - buf) or \
                (gb.direction == -1 and cur.c > gb.top + buf):
                 blocks.remove(gb)
                 continue
-
             if gb.alerted:
                 continue
-            # don't fire on the very candle that formed the block
             if newest_ts == gb.formed_ts:
                 continue
-
-            # retest: candle range re-enters the zone
             overlaps = cur.l <= gb.top + buf and cur.h >= gb.bot - buf
             if not overlaps:
                 continue
-
-            # strong close-position delta aligned with block direction
             buy_pct = close_pos_delta(cur)
             aligned = (gb.direction == 1 and buy_pct >= self.retest_delta) or \
                       (gb.direction == -1 and buy_pct <= 100 - self.retest_delta)
             if not aligned:
                 continue
-
-            # close on the correct side of the zone (defended, not broken through)
             side_ok = (gb.direction == 1 and cur.c >= gb.bot) or \
                       (gb.direction == -1 and cur.c <= gb.top)
             if not side_ok:
                 continue
-
-            # light volume gate
             if v_avg > 0 and cur.vol < v_avg * self.retest_vol_mult:
                 continue
-
             gb.alerted = True
             fired = RetestAlert(symbol, tf, gb.direction, gb.grade, gb.score,
                                 gb.top, gb.bot, cur.c, round(buy_pct, 1),
                                 round(cur.vol / v_avg, 1) if v_avg > 0 else 0.0)
-            # first qualifying block wins; stop here
             break
-
         return fired
 
     @staticmethod
@@ -185,8 +129,7 @@ class GoldRetestDetector:
         return max(1e-9, sum(w) / len(w))
 
 
-# ─────────────────────────────────────────────────────────────
-def telegram_line(a: RetestAlert) -> str:
+def telegram_line(a):
     arrow = "\U0001F7E2 LONG" if a.direction == 1 else "\U0001F534 SHORT"
     side = "buy" if a.direction == 1 else "sell"
     return (f"\u2605 GOLD RETEST  {arrow}  {a.symbol} [{a.tf}]\n"
@@ -194,14 +137,8 @@ def telegram_line(a: RetestAlert) -> str:
             f"close {a.price:.2f} | {a.buy_pct:.0f}% {side}-close | vol {a.vol_x:.1f}\u00d7")
 
 
-# ─────────────────────────────────────────────────────────────
-# Bar sourcing
-# ─────────────────────────────────────────────────────────────
-def aggregate_1m(bars_1m: Sequence[Bar], minutes: int) -> List[Bar]:
-    """Aggregate 1-minute Bars (oldest->newest) into N-minute Bars.
-    Groups in fixed chunks of `minutes`; drops a trailing partial group.
-    vol is summed; buy/sell left 0 (close-position delta computed downstream)."""
-    out: List[Bar] = []
+def aggregate_1m(bars_1m, minutes):
+    out = []
     n = len(bars_1m)
     full = (n // minutes) * minutes
     for i in range(0, full, minutes):
@@ -216,79 +153,41 @@ def aggregate_1m(bars_1m: Sequence[Bar], minutes: int) -> List[Bar]:
     return out
 
 
-# --- Dhan fetch adapter (wire to your actual intraday call) -------------------
-# ob_score/gold_retest need OHLCV bars. Dhan quote_data is a snapshot, so use
-# Dhan's intraday minute candles to seed history, then keep extending live.
-#
-# The dhanhq client exposes intraday minute data; the exact method name/signature
-# can vary by version, so this is left as an adapter you point at your working
-# call. It must return 1-minute bars oldest->newest.
-#
-# def fetch_1m(dhan, security_id, segment, count=400):
-#     resp = dhan.intraday_minute_data(security_id=security_id,
-#                                      exchange_segment=segment,   # "NSE_EQ" / "MCX_COMM"
-#                                      instrument_type="EQUITY")   # or FUTCOM etc.
-#     # resp is dict-or-string (rate-limit!) -> guard like your quote_data code:
-#     if not isinstance(resp, dict):
-#         return []
-#     d = resp.get("data", {})
-#     o, h, l, c, v = d["open"], d["high"], d["low"], d["close"], d["volume"]
-#     bars = [Bar(o[i], h[i], l[i], c[i], v[i]) for i in range(len(c))]
-#     return bars[-count:]
-#
-# Then per symbol+tf:
-#   b1 = fetch_1m(dhan, sid, seg)
-#   bars = aggregate_1m(b1, 5)     # or 15
-#   ts   = <timestamp of bars[-1]>
-#   if det.mark_and_check_new_bar(sym, tf, ts):
-#       alert = det.update(sym, tf, bars, ts)
-#       if alert:
-#           _tg_send(token, _dst, telegram_line(alert),
-#                    _topic_for("NSE") if seg.startswith("NSE") else _topic_for("Commodities"))
-
-
-# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Build a 5m series that forms a BULLISH gold block, then price pulls back
-    # into the zone and prints a strong-buy candle -> retest alert should fire.
-    bars: List[Bar] = []
+    bars = []
     p = 100.0
-    for i in range(240):                       # rising base -> swing high 133
+    for i in range(240):
         o = p
         c = p + 0.135
         bars.append(Bar(o, c + 0.1, o - 0.1, c, 100.0))
         p = c
-    bars.append(Bar(p, 133.0, p - 0.2, 131.8, 100.0))      # swing high
+    bars.append(Bar(p, 133.0, p - 0.2, 131.8, 100.0))
     p = 131.8
-    for i in range(15):                        # strictly-lower highs (no new pivot)
+    for i in range(15):
         o = p
         c = p - 0.15
         bars.append(Bar(o, o + 0.02, c - 0.1, c, 100.0))
         p = c
-    bars.append(Bar(p, p + 0.1, p - 1.0, p - 0.9, 90.0))   # OB down candle (zone)
+    bars.append(Bar(p, p + 0.1, p - 1.0, p - 0.9, 90.0))
     ob_c = bars[-1].c
     zone_top, zone_bot = bars[-1].h, bars[-1].l
-    bars.append(Bar(ob_c, ob_c + 1.5, ob_c + 0.2, ob_c + 1.4, 300))   # impulse
+    bars.append(Bar(ob_c, ob_c + 1.5, ob_c + 0.2, ob_c + 1.4, 300))
     imp = bars[-1]
-    bars.append(Bar(imp.c, 132.6, imp.h + 0.3, 132.4, 360))          # impulse 2
+    bars.append(Bar(imp.c, 132.6, imp.h + 0.3, 132.4, 360))
     prevc = bars[-1].c
-    bars.append(Bar(prevc, 134.5, prevc - 0.1, 134.0, 330))          # BOS bar -> gold block
-
-    # now retrace back DOWN into the zone, then a strong-buy defending candle
+    bars.append(Bar(prevc, 134.5, prevc - 0.1, 134.0, 330))
     dn = 134.0
-    for step in (132.5, 131.0, 130.0):         # walk down toward the zone
+    for step in (132.5, 131.0, 130.0):
         bars.append(Bar(dn, dn + 0.2, step - 0.1, step, 120.0))
         dn = step
-    # strong bull candle that dips INTO the zone and closes near its high
-    zc = (zone_top + zone_bot) / 2
-    bars.append(Bar(130.0, 130.2, zone_bot - 0.1, zone_top + 0.05, 260.0))  # retest!
+    bars.append(Bar(130.0, 130.2, zone_bot - 0.1, zone_top + 0.05, 260.0))
 
     det = GoldRetestDetector()
     need = 130
     fired = None
-    for i in range(need, len(bars) + 1):        # feed bar-by-bar like live
+    for i in range(need, len(bars) + 1):
         window = bars[:i]
-        ts = i                                  # use index as timestamp
+        ts = i
         if det.mark_and_check_new_bar("DEMO", "5m", ts):
             a = det.update("DEMO", "5m", window, ts)
             if a:
@@ -296,8 +195,122 @@ if __name__ == "__main__":
     if fired:
         print(telegram_line(fired))
     else:
-        # report how many gold blocks were registered, for debugging
         blks = det._blocks.get("DEMO|5m", [])
-        print("no retest alert; gold blocks registered:", len(blks))
-        for b in blks:
-            print(f"  dir={b.direction} zone={b.bot:.2f}-{b.top:.2f} score={b.score} alerted={b.alerted}")
+        print("no retest alert; gold blocks:", len(blks))
+
+
+# ═══ Dhan intraday fetch + universe (appended for live use) ═══
+import datetime as _dt
+
+def fetch_1m_dhan(dhan, security_id, exchange_segment, instrument_type):
+    """Return today's 1-minute Bars (oldest->newest) or [] on any failure."""
+    try:
+        today = _dt.date.today().isoformat()
+        r = dhan.intraday_minute_data(security_id=str(security_id),
+                                      exchange_segment=exchange_segment,
+                                      instrument_type=instrument_type,
+                                      from_date=today, to_date=today, interval=1)
+        if not isinstance(r, dict):
+            return [], None
+        d = r.get("data") or {}
+        o = d.get("open") or []
+        h = d.get("high") or []
+        l = d.get("low") or []
+        c = d.get("close") or []
+        v = d.get("volume") or []
+        ts = d.get("timestamp") or []
+        n = min(len(o), len(h), len(l), len(c), len(v))
+        if n == 0:
+            return [], None
+        bars = [Bar(float(o[i]), float(h[i]), float(l[i]), float(c[i]), float(v[i]))
+                for i in range(n)]
+        last_ts = int(ts[n-1]) if ts else n
+        return bars, last_ts
+    except Exception:
+        return [], None
+
+
+# Nifty-50 Dhan security IDs (NSE_EQ). Verify against your scrip master if any drift.
+NIFTY50 = {
+    "RELIANCE": 2885, "TCS": 11536, "HDFCBANK": 1333, "ICICIBANK": 4963,
+    "INFY": 1594, "HINDUNILVR": 1394, "ITC": 1660, "SBIN": 3045,
+    "BHARTIARTL": 10604, "KOTAKBANK": 1922, "LT": 11483, "AXISBANK": 5900,
+    "BAJFINANCE": 317, "ASIANPAINT": 236, "MARUTI": 10999, "HCLTECH": 7229,
+    "SUNPHARMA": 3351, "TITAN": 3506, "ULTRACEMCO": 11532, "WIPRO": 3787,
+    "NESTLEIND": 17963, "ONGC": 2475, "NTPC": 11630, "TATAMOTORS": 759782,
+    "POWERGRID": 14977, "M&M": 2031, "TATASTEEL": 3499, "ADANIENT": 25,
+    "JSWSTEEL": 11723, "BAJAJFINSV": 16675, "COALINDIA": 20374, "HDFCLIFE": 467,
+    "TECHM": 13538, "GRASIM": 1232, "INDUSINDBK": 5258, "CIPLA": 694,
+    "DRREDDY": 881, "EICHERMOT": 910, "BRITANNIA": 547, "APOLLOHOSP": 157,
+    "BPCL": 526, "DIVISLAB": 10940, "HEROMOTOCO": 1348, "HINDALCO": 1363,
+    "TATACONSUM": 3432, "BAJAJ-AUTO": 16669, "SBILIFE": 21808, "UPL": 11287,
+    "ADANIPORTS": 15083,
+}
+
+# MCX commodity futures -- fill security IDs from your scrip master (front-month).
+# Left with placeholders; set the current-month IDs before enabling MCX.
+MCX = {
+    # "CRUDEOIL": <id>, "NATURALGAS": <id>, "GOLD": <id>, "SILVER": <id>,
+    # "COPPER": <id>, "ZINC": <id>, "ALUMINIUM": <id>,
+}
+
+
+# ═══ Live scan helper (day-aware fetch → 15m → detector) ═══
+from collections import OrderedDict as _OD
+
+_IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+_GOLD_DET = GoldRetestDetector()          # persistent state across polls
+_GOLD_LASTBAR = {}                         # {symbol: last 15m bar ts processed}
+
+def _bars15_for(dhan, security_id, segment, instrument_type, days=25):
+    """Fetch 1m history, split by trading day, aggregate each day to 15m."""
+    try:
+        to = _dt.date.today().isoformat()
+        frm = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+        r = dhan.intraday_minute_data(security_id=str(security_id),
+                                      exchange_segment=segment,
+                                      instrument_type=instrument_type,
+                                      from_date=frm, to_date=to, interval=1)
+        if not isinstance(r, dict):
+            return [], None
+        d = r.get("data") or {}
+        o=d.get("open") or []; h=d.get("high") or []; l=d.get("low") or []
+        c=d.get("close") or []; v=d.get("volume") or []; ts=d.get("timestamp") or []
+        n = min(len(o),len(h),len(l),len(c),len(v),len(ts))
+        if n == 0:
+            return [], None
+        days_map = _OD()
+        for i in range(n):
+            day = _dt.datetime.fromtimestamp(ts[i], _IST).date()
+            days_map.setdefault(day, []).append(
+                Bar(float(o[i]),float(h[i]),float(l[i]),float(c[i]),float(v[i])))
+        bars15 = []
+        for _day, b1 in days_map.items():
+            bars15 += aggregate_1m(b1, 15)
+        last_ts = int(ts[n-1])
+        return bars15, last_ts
+    except Exception:
+        return [], None
+
+
+def scan_nse_gold(dhan, tg_send, token, dst, topic, pace=0.15):
+    """Scan all Nifty-50 for gold-block retests on 15m. Fire via tg_send.
+    Returns count of alerts sent this pass."""
+    import time as _t
+    sent = 0
+    for sym, sid in NIFTY50.items():
+        bars15, last_ts = _bars15_for(dhan, sid, "NSE_EQ", "EQUITY")
+        _t.sleep(pace)                     # pacing: ~49*0.15s ≈ 7s spread
+        if not bars15 or last_ts is None:
+            continue
+        # only work when a NEW 15m bar has closed for this symbol
+        if _GOLD_LASTBAR.get(sym) == last_ts:
+            continue
+        _GOLD_LASTBAR[sym] = last_ts
+        if not _GOLD_DET.mark_and_check_new_bar(sym, "15m", last_ts):
+            continue
+        alert = _GOLD_DET.update(sym, "15m", bars15, last_ts)
+        if alert:
+            tg_send(token, dst, telegram_line(alert), topic)
+            sent += 1
+    return sent
