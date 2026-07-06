@@ -96,17 +96,16 @@ class GoldRetestDetector:
                 continue
             if newest_ts == gb.formed_ts:
                 continue
-            overlaps = cur.l <= gb.top + buf and cur.h >= gb.bot - buf
-            if not overlaps:
+            entered = cur.h >= gb.bot and cur.l <= gb.top
+            if not entered:
+                continue
+            closed_in = gb.bot <= cur.c <= gb.top
+            if not closed_in:
                 continue
             buy_pct = close_pos_delta(cur)
             aligned = (gb.direction == 1 and buy_pct >= self.retest_delta) or \
                       (gb.direction == -1 and buy_pct <= 100 - self.retest_delta)
             if not aligned:
-                continue
-            side_ok = (gb.direction == 1 and cur.c >= gb.bot) or \
-                      (gb.direction == -1 and cur.c <= gb.top)
-            if not side_ok:
                 continue
             if v_avg > 0 and cur.vol < v_avg * self.retest_vol_mult:
                 continue
@@ -314,3 +313,10 @@ def scan_nse_gold(dhan, tg_send, token, dst, topic, pace=0.15):
             tg_send(token, dst, telegram_line(alert), topic)
             sent += 1
     return sent
+
+
+# ═══ Indices for gold detection (IDX_I segment, INDEX instrument) ═══
+INDICES = {
+    "NIFTY":     {"id": 13, "seg": "IDX_I", "inst": "INDEX", "step": 50},
+    "BANKNIFTY": {"id": 25, "seg": "IDX_I", "inst": "INDEX", "step": 100},
+}

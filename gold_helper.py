@@ -15,7 +15,7 @@ def main():
     try:
         from dhanhq import DhanContext, dhanhq
         from ob_score import Bar, score_block
-        from gold_retest import aggregate_1m, GoldRetestDetector, close_pos_delta, NIFTY50
+        from gold_retest import aggregate_1m, GoldRetestDetector, close_pos_delta, NIFTY50, INDICES
     except Exception as e:
         print(json.dumps({"alerts": [], "err": f"import: {e}"}))
         return
@@ -33,11 +33,13 @@ def main():
     alerts = []
     formations = []
     import time
-    for sym, sid in NIFTY50.items():
+    scan_list = [(sym, sid, "NSE_EQ", "EQUITY") for sym, sid in NIFTY50.items()]
+    scan_list += [(sym, ix["id"], ix["seg"], ix["inst"]) for sym, ix in INDICES.items()]
+    for sym, sid, seg, inst in scan_list:
         try:
             r = dhan.intraday_minute_data(security_id=str(sid),
-                                          exchange_segment="NSE_EQ",
-                                          instrument_type="EQUITY",
+                                          exchange_segment=seg,
+                                          instrument_type=inst,
                                           from_date=frm, to_date=to, interval=1)
             time.sleep(0.15)
             if not isinstance(r, dict):

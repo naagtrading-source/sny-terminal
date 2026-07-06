@@ -276,9 +276,10 @@ def main():
                         gold_sent[zk] = 1
                         arrow = "\U0001F7E2 LONG" if a["dir"]==1 else "\U0001F534 SHORT"
                         side = "buy" if a["dir"]==1 else "sell"
+                        pct = a["buy_pct"] if a["dir"]==1 else 100 - a["buy_pct"]
                         gmsg = (f"\u2605 *GOLD RETEST*  {arrow}  {a['symbol']} [{a['tf']}]\n"
                                 f"grade {a['grade']} {a['score']} | zone {a['bot']}-{a['top']}\n"
-                                f"close {a['price']} | {a['buy_pct']:.0f}% {side}-close | vol {a['vol_x']}\u00d7")
+                                f"close {a['price']} | {pct:.0f}% {side}-close | vol {a['vol_x']}\u00d7")
                         _log_signal({"src":"gold_retest","sym":a["symbol"],"tf":a["tf"],
                             "dir":a["dir"],"grade":a["grade"],"score":a["score"],
                             "zone_bot":a["bot"],"zone_top":a["top"],"price":a["price"],
