@@ -27,7 +27,7 @@ def _log_signal(rec):
     except Exception as e:
         print(f"[detect] log err: {e}", file=sys.stderr)
 
-def _save_state(state, tg_sent):
+def _save_state(state, tg_sent, gold_sent=None, goldform_sent=None, gold100_sent=None):
     """Persist detection state so a restart resumes with baselines intact."""
     try:
         import time as _t
@@ -38,6 +38,9 @@ def _save_state(state, tg_sent):
             "candle_vol": state.get("candle_vol", {}),
             "day_oi": state.get("day_oi", {}),
             "tg_sent": {k: v for k, v in tg_sent.items() if v > cutoff},
+            "gold_sent": gold_sent or {},
+            "goldform_sent": goldform_sent or {},
+            "gold100_sent": gold100_sent or {},
         }
         with open(STATE_FILE, "w") as f:
             json.dump(blob, f)
@@ -53,10 +56,16 @@ def _load_state():
                  "volhist": _dd(list, b.get("volhist", {})),
                  "candle_vol": b.get("candle_vol", {}),
                  "day_oi": b.get("day_oi", {})}
-        return (state, b.get("tg_sent", {}))
+        import datetime as _dtx
+        _today = _dtx.date.today().isoformat()
+        def _pruned(d):
+            return {k: v for k, v in (d or {}).items() if str(k).startswith(_today)}
+        return (state, b.get("tg_sent", {}),
+                _pruned(b.get("gold_sent")), _pruned(b.get("goldform_sent")),
+                _pruned(b.get("gold100_sent")))
     except Exception:
         from collections import defaultdict as _dd
-        return ({"prev": _dd(dict), "volhist": _dd(list), "candle_vol": {}}, {})
+        return ({"prev": _dd(dict), "volhist": _dd(list), "candle_vol": {}}, {}, {}, {}, {})
 
 def _load_dotenv():
     try:
@@ -177,11 +186,8 @@ def main():
         if cat == "Gold":
             return _topic_gold
         return _topic_nse  # Index / Stock
-    state, tg_sent = _load_state()
+    state, tg_sent, gold_sent, goldform_sent, gold100_sent = _load_state()
     tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
-    gold_sent = {}  # {zkey: 1} — gold-retest alert dedup
-    goldform_sent = {}  # {fkey: 1} — gold-formation alert dedup
-    gold100_sent = {}  # {fkey: 1} — perfect-100 alert dedup
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
     tm = {}
@@ -208,6 +214,8 @@ def main():
                     galerts_form = json.loads(gp.stdout).get("formations", [])
                     for a in galerts:
                         zk = a.get("zkey")
+                        import datetime as _dtk
+                        zk = f"{_dtk.date.today().isoformat()}|{zk}" if zk else zk
                         if not zk or gold_sent.get(zk):
                             continue
                         gold_sent[zk] = 1
@@ -225,6 +233,8 @@ def main():
                             _tg_send(token, _dst, gmsg, _topic_for("Gold"))
                     for fo in galerts_form:
                         fk = fo.get("fkey")
+                        import datetime as _dtk2
+                        fk = f"{_dtk2.date.today().isoformat()}|{fk}" if fk else fk
                         if not fk or goldform_sent.get(fk):
                             continue
                         goldform_sent[fk] = 1
@@ -315,7 +325,7 @@ def main():
         except Exception as e:
             print(f"[detect] loop err: {e}", file=sys.stderr)
         if time.time() - _last_save > 300:
-            _save_state(state, tg_sent)
+            _save_state(state, tg_sent, gold_sent, goldform_sent, gold100_sent)
             _last_save = time.time()
         time.sleep(POLL_SECONDS)
 

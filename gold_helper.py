@@ -86,7 +86,7 @@ def main():
                     "symbol": sym, "tf": "15m", "dir": _blk.direction,
                     "grade": _blk.grade, "score": _blk.score,
                     "top": round(_blk.top,2), "bot": round(_blk.bot,2),
-                    "fkey": f"{sym}|{_blk.direction}|{last_ts - (last_ts % 900)}|{round(_blk.bot,0):.0f}",
+                    "fkey": f"{sym}|{_blk.direction}|{round(_blk.bot,1)}|{round(_blk.top,1)}",
                 })
         except Exception:
             continue
