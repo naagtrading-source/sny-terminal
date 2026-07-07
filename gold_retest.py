@@ -13,6 +13,7 @@ class GoldBlock:
     grade: str
     formed_ts: int
     alerted: bool = False
+    left_zone: bool = False
 
 
 @dataclass
@@ -95,6 +96,12 @@ class GoldRetestDetector:
             if gb.alerted:
                 continue
             if newest_ts == gb.formed_ts:
+                continue
+            # mark when price has fully LEFT the zone (needed for a true retest)
+            if cur.l > gb.top or cur.h < gb.bot:
+                gb.left_zone = True
+            # a retest requires the block to have been left first (formed->left->return)
+            if not gb.left_zone:
                 continue
             entered = cur.h >= gb.bot and cur.l <= gb.top
             if not entered:
