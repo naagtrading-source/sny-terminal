@@ -99,8 +99,14 @@ class GoldRetestDetector:
             entered = cur.h >= gb.bot and cur.l <= gb.top
             if not entered:
                 continue
-            closed_in = gb.bot <= cur.c <= gb.top
-            if not closed_in:
+            # rejection: close inside the zone OR within 0.2*ATR of the correct
+            # edge (a wick-rejection can close just past the zone and still count).
+            tol = atr * 0.2
+            if gb.direction == 1:
+                held = cur.c >= gb.bot - tol          # bull: didn't close far below
+            else:
+                held = cur.c <= gb.top + tol          # bear: didn't close far above
+            if not held:
                 continue
             buy_pct = close_pos_delta(cur)
             aligned = (gb.direction == 1 and buy_pct >= self.retest_delta) or \

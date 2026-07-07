@@ -74,6 +74,11 @@ def main():
                         "vol_x": a.vol_x, "zkey": f"{sym}|{a.direction}|{round(a.zone_bot,1)}",
                     })
             # formation: did the NEWEST bar itself just form a gold A/A+ block?
+            # score_block only returns when a BOS occurs ON the last bar, so this
+            # is inherently "fresh". Dedup key uses the 15m bar's close timestamp
+            # (stable within a candle, changes only when a NEW candle closes) plus
+            # a COARSE zone bucket (0.1% of price) so tiny per-scan zone drift
+            # cannot defeat dedup and cause repeat alerts.
             from ob_score import score_block as _sb
             _blk = _sb(bars15, trend_len=120, range_len=50, vol_mult=2.0, min_score=75)
             if _blk is not None and _blk.score >= 75:
@@ -81,7 +86,7 @@ def main():
                     "symbol": sym, "tf": "15m", "dir": _blk.direction,
                     "grade": _blk.grade, "score": _blk.score,
                     "top": round(_blk.top,2), "bot": round(_blk.bot,2),
-                    "fkey": f"{sym}|{_blk.direction}|{round(_blk.bot,1)}",
+                    "fkey": f"{sym}|{_blk.direction}|{last_ts - (last_ts % 900)}|{round(_blk.bot,0):.0f}",
                 })
         except Exception:
             continue
