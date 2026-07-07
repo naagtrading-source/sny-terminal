@@ -198,6 +198,55 @@ def main():
                 if not tm or (time.time() - tm_refreshed) > 3600:
                     tm = _get_token_map()
                     tm_refreshed = time.time()
+
+            # ── NSE gold-block retest scan (15m, Nifty-50) ──
+            if nse:
+                try:
+                    gp = subprocess.run([sys.executable, "gold_helper.py"],
+                                        capture_output=True, text=True, cwd=BASE, timeout=150)
+                    galerts = json.loads(gp.stdout).get("alerts", [])
+                    galerts_form = json.loads(gp.stdout).get("formations", [])
+                    for a in galerts:
+                        zk = a.get("zkey")
+                        if not zk or gold_sent.get(zk):
+                            continue
+                        gold_sent[zk] = 1
+                        arrow = "\U0001F7E2 LONG" if a["dir"]==1 else "\U0001F534 SHORT"
+                        side = "buy" if a["dir"]==1 else "sell"
+                        pct = a["buy_pct"] if a["dir"]==1 else 100 - a["buy_pct"]
+                        gmsg = (f"\u2605 *GOLD RETEST*  {arrow}  {a['symbol']} [{a['tf']}]\n"
+                                f"grade {a['grade']} {a['score']} | zone {a['bot']}-{a['top']}\n"
+                                f"close {a['price']} | {pct:.0f}% {side}-close | vol {a['vol_x']}\u00d7")
+                        _log_signal({"src":"gold_retest","sym":a["symbol"],"tf":a["tf"],
+                            "dir":a["dir"],"grade":a["grade"],"score":a["score"],
+                            "zone_bot":a["bot"],"zone_top":a["top"],"price":a["price"],
+                            "buy_pct":a["buy_pct"],"vol_x":a["vol_x"]})
+                        if token and _dst:
+                            _tg_send(token, _dst, gmsg, _topic_for("Gold"))
+                    for fo in galerts_form:
+                        fk = fo.get("fkey")
+                        if not fk or goldform_sent.get(fk):
+                            continue
+                        goldform_sent[fk] = 1
+                        farrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
+                        fmsg = (f"\u2b50 *GOLD FORMED*  {farrow}  {fo['symbol']} [{fo['tf']}]\n"
+                                f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}")
+                        _log_signal({"src":"gold_form","sym":fo["symbol"],"tf":fo["tf"],
+                            "dir":fo["dir"],"grade":fo["grade"],"score":fo["score"],
+                            "zone_bot":fo["bot"],"zone_top":fo["top"]})
+                        if token and _dst:
+                            _tg_send(token, _dst, fmsg, _topic_for("GoldForm"))
+                        if fo.get("score") == 100 and not gold100_sent.get(fk):
+                            gold100_sent[fk] = 1
+                            p_arrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
+                            pmsg = (f"\u2b50\u2b50\u2b50 *PERFECT 100 GOLD*  {p_arrow}  {fo['symbol']} [{fo['tf']}]\n"
+                                    f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}\n"
+                                    f"_all 6 confluences hit_")
+                            if token and _dst:
+                                _tg_send(token, _dst, pmsg, _topic_for("Gold100"))
+                except Exception as ge:
+                    print(f"[detect] gold err: {ge}", file=sys.stderr)
+
                 # Only detect on markets currently OPEN. After 15:30 NSE closes but
                 # MCX runs to 23:30 — without this, NSE contracts kept firing (e.g.
                 # ICICIBANK options at 16:30). Filter token_map to open segments.
@@ -262,53 +311,6 @@ def main():
                 else:
                     print("[detect] no quotes this cycle", file=sys.stderr)
 
-            # ── NSE gold-block retest scan (15m, Nifty-50) ──
-            if nse:
-                try:
-                    gp = subprocess.run([sys.executable, "gold_helper.py"],
-                                        capture_output=True, text=True, cwd=BASE, timeout=150)
-                    galerts = json.loads(gp.stdout).get("alerts", [])
-                    galerts_form = json.loads(gp.stdout).get("formations", [])
-                    for a in galerts:
-                        zk = a.get("zkey")
-                        if not zk or gold_sent.get(zk):
-                            continue
-                        gold_sent[zk] = 1
-                        arrow = "\U0001F7E2 LONG" if a["dir"]==1 else "\U0001F534 SHORT"
-                        side = "buy" if a["dir"]==1 else "sell"
-                        pct = a["buy_pct"] if a["dir"]==1 else 100 - a["buy_pct"]
-                        gmsg = (f"\u2605 *GOLD RETEST*  {arrow}  {a['symbol']} [{a['tf']}]\n"
-                                f"grade {a['grade']} {a['score']} | zone {a['bot']}-{a['top']}\n"
-                                f"close {a['price']} | {pct:.0f}% {side}-close | vol {a['vol_x']}\u00d7")
-                        _log_signal({"src":"gold_retest","sym":a["symbol"],"tf":a["tf"],
-                            "dir":a["dir"],"grade":a["grade"],"score":a["score"],
-                            "zone_bot":a["bot"],"zone_top":a["top"],"price":a["price"],
-                            "buy_pct":a["buy_pct"],"vol_x":a["vol_x"]})
-                        if token and _dst:
-                            _tg_send(token, _dst, gmsg, _topic_for("Gold"))
-                    for fo in galerts_form:
-                        fk = fo.get("fkey")
-                        if not fk or goldform_sent.get(fk):
-                            continue
-                        goldform_sent[fk] = 1
-                        farrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
-                        fmsg = (f"\u2b50 *GOLD FORMED*  {farrow}  {fo['symbol']} [{fo['tf']}]\n"
-                                f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}")
-                        _log_signal({"src":"gold_form","sym":fo["symbol"],"tf":fo["tf"],
-                            "dir":fo["dir"],"grade":fo["grade"],"score":fo["score"],
-                            "zone_bot":fo["bot"],"zone_top":fo["top"]})
-                        if token and _dst:
-                            _tg_send(token, _dst, fmsg, _topic_for("GoldForm"))
-                        if fo.get("score") == 100 and not gold100_sent.get(fk):
-                            gold100_sent[fk] = 1
-                            p_arrow = "\U0001F7E2 BULL" if fo["dir"]==1 else "\U0001F534 BEAR"
-                            pmsg = (f"\u2b50\u2b50\u2b50 *PERFECT 100 GOLD*  {p_arrow}  {fo['symbol']} [{fo['tf']}]\n"
-                                    f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}\n"
-                                    f"_all 6 confluences hit_")
-                            if token and _dst:
-                                _tg_send(token, _dst, pmsg, _topic_for("Gold100"))
-                except Exception as ge:
-                    print(f"[detect] gold err: {ge}", file=sys.stderr)
 
         except Exception as e:
             print(f"[detect] loop err: {e}", file=sys.stderr)

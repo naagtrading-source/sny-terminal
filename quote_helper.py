@@ -23,8 +23,13 @@ def main():
     access_token = os.environ["DHAN_ACCESS_TOKEN"].strip()
 
     from dhanhq import DhanContext, dhanhq
+    import time as _time
     ctx  = DhanContext(client_id, access_token)
     dhan = dhanhq(ctx)
+    # Budget to stop the bisect from spiraling on bad/empty tokens at open.
+    _budget = {"calls": 0, "max_calls": 120, "deadline": _time.time() + 70}
+    def _over_budget():
+        return _budget["calls"] >= _budget["max_calls"] or _time.time() > _budget["deadline"]
 
     by_seg = {}
     for t in tokens:
@@ -43,6 +48,11 @@ def main():
     def _fetch(bseg, depth=0):
         # Dhan fails an ENTIRE batch if any one security_id is bad/expired.
         # On failure, bisect down to per-token so one bad ID drops only itself.
+        # Budget guard: if we've spent our call/time budget, stop retrying —
+        # skip remaining bad tokens this cycle rather than spiral into a timeout.
+        if _over_budget():
+            return {"status": "budget_exhausted"}
+        _budget["calls"] += 1
         r = dhan.quote_data(securities=bseg)
         ok = isinstance(r, dict) and r.get("status") == "success"
         if ok:
@@ -67,6 +77,8 @@ def main():
         return merged
 
     for bseg in _batches(by_seg):
+        if _over_budget():
+            break
         try:
             r = _fetch(bseg)
             if not isinstance(r, dict):
