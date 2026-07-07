@@ -89,39 +89,22 @@ class GoldRetestDetector:
         fired = None
 
         for gb in list(blocks):
-            if (gb.direction == 1 and cur.c < gb.bot - buf) or \
-               (gb.direction == -1 and cur.c > gb.top + buf):
+            # RETEST = price touches the zone. Fire once per block. No delta/
+            # volume/leave gates. Only remove a block if price closes a FULL ATR
+            # beyond it (truly dead) so brief overshoots don't delete a
+            # still-retestable block.
+            if (gb.direction == 1 and cur.c < gb.bot - atr) or \
+               (gb.direction == -1 and cur.c > gb.top + atr):
                 blocks.remove(gb)
                 continue
             if gb.alerted:
                 continue
             if newest_ts == gb.formed_ts:
                 continue
-            # mark when price has fully LEFT the zone (needed for a true retest)
-            if cur.l > gb.top or cur.h < gb.bot:
-                gb.left_zone = True
-            # a retest requires the block to have been left first (formed->left->return)
-            if not gb.left_zone:
-                continue
-            entered = cur.h >= gb.bot and cur.l <= gb.top
-            if not entered:
-                continue
-            # rejection: close inside the zone OR within 0.2*ATR of the correct
-            # edge (a wick-rejection can close just past the zone and still count).
-            tol = atr * 0.2
-            if gb.direction == 1:
-                held = cur.c >= gb.bot - tol          # bull: didn't close far below
-            else:
-                held = cur.c <= gb.top + tol          # bear: didn't close far above
-            if not held:
+            touched = cur.h >= gb.bot and cur.l <= gb.top
+            if not touched:
                 continue
             buy_pct = close_pos_delta(cur)
-            aligned = (gb.direction == 1 and buy_pct >= self.retest_delta) or \
-                      (gb.direction == -1 and buy_pct <= 100 - self.retest_delta)
-            if not aligned:
-                continue
-            if v_avg > 0 and cur.vol < v_avg * self.retest_vol_mult:
-                continue
             gb.alerted = True
             fired = RetestAlert(symbol, tf, gb.direction, gb.grade, gb.score,
                                 gb.top, gb.bot, cur.c, round(buy_pct, 1),
