@@ -37,8 +37,16 @@ def close_pos_delta(bar):
     return max(0.0, min(100.0, (bar.c - bar.l) / rng * 100.0))
 
 
+def _delta_pct(bar):
+    """Buy% from the true 1m split if present, else close-position proxy."""
+    tot = bar.buy_vol + bar.sell_vol
+    if tot > 0:
+        return bar.buy_vol / tot * 100.0
+    return close_pos_delta(bar)
+
+
 class GoldRetestDetector:
-    def __init__(self, *, min_score=75, retest_delta=65.0, retest_vol_mult=1.0,
+    def __init__(self, *, min_score=90, retest_delta=70.0, retest_vol_mult=1.5,
                  zone_buffer_atr=0.15, max_blocks=6, score_kwargs=None):
         self.min_score = min_score
         self.retest_delta = retest_delta
@@ -104,11 +112,18 @@ class GoldRetestDetector:
             touched = cur.h >= gb.bot and cur.l <= gb.top
             if not touched:
                 continue
-            buy_pct = close_pos_delta(cur)
+            # H/D confirmation: aligned delta dominance + above-avg volume,
+            # true 1m split. Touch alone does NOT alert; block stays live for
+            # a later confirming candle.
+            buy_pct = _delta_pct(cur)
+            aligned = buy_pct if gb.direction == 1 else (100.0 - buy_pct)
+            vol_x = cur.vol / v_avg if v_avg > 0 else 0.0
+            if aligned < self.retest_delta or vol_x < self.retest_vol_mult:
+                continue
             gb.alerted = True
             fired = RetestAlert(symbol, tf, gb.direction, gb.grade, gb.score,
-                                gb.top, gb.bot, cur.c, round(buy_pct, 1),
-                                round(cur.vol / v_avg, 1) if v_avg > 0 else 0.0)
+                                gb.top, gb.bot, cur.c, round(aligned, 1),
+                                round(vol_x, 1))
             break
         return fired
 
@@ -129,7 +144,7 @@ def telegram_line(a):
     side = "buy" if a.direction == 1 else "sell"
     return (f"\u2605 GOLD RETEST  {arrow}  {a.symbol} [{a.tf}]\n"
             f"grade {a.grade} {a.score} | zone {a.zone_bot:.2f}-{a.zone_top:.2f}\n"
-            f"close {a.price:.2f} | {a.buy_pct:.0f}% {side}-close | vol {a.vol_x:.1f}\u00d7")
+            f"close {a.price:.2f} | {a.buy_pct:.0f}% {side}-delta | vol {a.vol_x:.1f}\u00d7")
 
 
 def aggregate_1m(bars_1m, minutes):
@@ -138,12 +153,16 @@ def aggregate_1m(bars_1m, minutes):
     full = (n // minutes) * minutes
     for i in range(0, full, minutes):
         chunk = bars_1m[i:i + minutes]
+        bv = sum(b.vol for b in chunk if b.c >= b.o)
+        sv = sum(b.vol for b in chunk if b.c < b.o)
         out.append(Bar(
             o=chunk[0].o,
             h=max(b.h for b in chunk),
             l=min(b.l for b in chunk),
             c=chunk[-1].c,
             vol=sum(b.vol for b in chunk),
+            buy_vol=bv,
+            sell_vol=sv,
         ))
     return out
 
@@ -316,3 +335,37 @@ INDICES = {
     "NIFTY":     {"id": 13, "seg": "IDX_I", "inst": "INDEX", "step": 50},
     "BANKNIFTY": {"id": 25, "seg": "IDX_I", "inst": "INDEX", "step": 100},
 }
+
+
+# ── MCX commodity front-month futures (roll monthly, resolved from scrip master) ──
+MCX_COMMODITIES = ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER", "GOLDM",
+                   "SILVERM", "COPPER", "ZINC", "ALUMINIUM"]
+
+def mcx_front_month(master_path="api-scrip-master-fresh.csv"):
+    """Return {base: security_id} for the nearest non-expired FUTCOM per commodity.
+    Commodity contracts roll monthly, so this must be read from a fresh-enough
+    scrip master. Returns empty dict if the master is missing/unreadable."""
+    import csv as _csv, datetime as _dt, os as _os
+    if not _os.path.exists(master_path):
+        return {}
+    today = _dt.datetime.now().date()
+    best = {}
+    try:
+        with open(master_path, encoding="utf-8", errors="ignore") as f:
+            for r in _csv.DictReader(f):
+                if r.get("SEM_EXM_EXCH_ID") != "MCX": continue
+                if r.get("SEM_INSTRUMENT_NAME") != "FUTCOM": continue
+                sym = (r.get("SEM_TRADING_SYMBOL", "") or "").upper()
+                base = sym.split("-")[0]
+                if base not in MCX_COMMODITIES: continue
+                exp = r.get("SEM_EXPIRY_DATE", "")[:10]
+                try:
+                    ed = _dt.datetime.strptime(exp, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if ed < today: continue
+                if base not in best or ed < best[base][1]:
+                    best[base] = (r.get("SEM_SMST_SECURITY_ID"), ed)
+    except Exception:
+        return {}
+    return {b: sid for b, (sid, ed) in best.items()}

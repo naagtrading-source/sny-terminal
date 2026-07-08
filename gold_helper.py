@@ -15,7 +15,7 @@ def main():
     try:
         from dhanhq import DhanContext, dhanhq
         from ob_score import Bar, score_block
-        from gold_retest import aggregate_1m, GoldRetestDetector, close_pos_delta, NIFTY50, INDICES
+        from gold_retest import aggregate_1m, GoldRetestDetector, close_pos_delta, NIFTY50, INDICES, mcx_front_month
     except Exception as e:
         print(json.dumps({"alerts": [], "err": f"import: {e}"}))
         return
@@ -33,8 +33,28 @@ def main():
     alerts = []
     formations = []
     import time
-    scan_list = [(sym, sid, "NSE_EQ", "EQUITY") for sym, sid in NIFTY50.items()]
-    scan_list += [(sym, ix["id"], ix["seg"], ix["inst"]) for sym, ix in INDICES.items()]
+    import sys as _sys
+    _args = set(_sys.argv[1:])
+    _do_nse = ("--nse" in _args) or (not _args)   # default: scan NSE if no flags
+    _do_mcx = ("--mcx" in _args)
+
+    scan_list = []
+    if _do_nse:
+        scan_list += [(sym, sid, "NSE_EQ", "EQUITY") for sym, sid in NIFTY50.items()]
+        scan_list += [(sym, ix["id"], ix["seg"], ix["inst"]) for sym, ix in INDICES.items()]
+    if _do_mcx:
+        # keep the scrip master fresh (commodity contracts roll monthly)
+        try:
+            import os as _os, time as _t, urllib.request as _u
+            _mp = _os.path.join(_os.path.dirname(__file__), "api-scrip-master-fresh.csv")
+            if (not _os.path.exists(_mp)) or (_t.time() - _os.path.getmtime(_mp) > 86400):
+                _rq = _u.Request("https://images.dhan.co/api-data/api-scrip-master.csv",
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                open(_mp, "w").write(_u.urlopen(_rq, timeout=60).read().decode("utf-8", "ignore"))
+        except Exception:
+            pass  # if refresh fails, mcx_front_month falls back to existing file
+        for _base, _sid in mcx_front_month().items():
+            scan_list.append((_base, _sid, "MCX_COMM", "FUTCOM"))
     for sym, sid, seg, inst in scan_list:
         try:
             r = dhan.intraday_minute_data(security_id=str(sid),

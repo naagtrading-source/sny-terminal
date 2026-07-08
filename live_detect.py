@@ -205,11 +205,12 @@ def main():
                     tm = _get_token_map()
                     tm_refreshed = time.time()
 
-            # ── NSE gold-block retest scan (15m, Nifty-50) ──
-            if nse:
+            # ── Gold-block scan (NSE 15m Nifty-50 + MCX commodity front-months) ──
+            if nse or mcx:
                 try:
-                    gp = subprocess.run([sys.executable, "gold_helper.py"],
-                                        capture_output=True, text=True, cwd=BASE, timeout=150)
+                    _gflags = (["--nse"] if nse else []) + (["--mcx"] if mcx else [])
+                    gp = subprocess.run([sys.executable, "gold_helper.py"] + _gflags,
+                                        capture_output=True, text=True, cwd=BASE, timeout=180)
                     galerts = json.loads(gp.stdout).get("alerts", [])
                     galerts_form = json.loads(gp.stdout).get("formations", [])
                     for a in galerts:
