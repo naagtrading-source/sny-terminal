@@ -96,6 +96,9 @@ def main():
             r = _fetch(bseg)
             if not isinstance(r, dict):
                 continue
+            if r.get("status") == "budget_exhausted":
+                print("[quote_helper] BUDGET EXHAUSTED - partial quotes", file=sys.stderr)
+                break
             data = r.get("data", {})
             if isinstance(data, dict) and "data" in data:
                 data = data["data"]
