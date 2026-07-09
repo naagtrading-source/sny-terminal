@@ -28,6 +28,13 @@ def main():
     dhan = dhanhq(ctx)
     # Budget to stop the bisect from spiraling on bad/empty tokens at open.
     _budget = {"calls": 0, "max_calls": 120, "deadline": _time.time() + 70}
+    _last_call = [0.0]
+    _MIN_GAP = 1.15
+    def _throttle():
+        gap = _time.time() - _last_call[0]
+        if gap < _MIN_GAP:
+            _time.sleep(_MIN_GAP - gap)
+        _last_call[0] = _time.time()
     def _over_budget():
         return _budget["calls"] >= _budget["max_calls"] or _time.time() > _budget["deadline"]
 
@@ -50,13 +57,19 @@ def main():
         # On failure, bisect down to per-token so one bad ID drops only itself.
         # Budget guard: if we've spent our call/time budget, stop retrying —
         # skip remaining bad tokens this cycle rather than spiral into a timeout.
-        if _over_budget():
-            return {"status": "budget_exhausted"}
-        _budget["calls"] += 1
-        r = dhan.quote_data(securities=bseg)
-        ok = isinstance(r, dict) and r.get("status") == "success"
-        if ok:
-            return r
+        # Rate-limit rejection is not a bad token. Retry the same batch
+        # before bisecting, else the bisect burns the whole budget.
+        for _att in range(3):
+            if _over_budget():
+                return {"status": "budget_exhausted"}
+            _throttle()
+            _budget["calls"] += 1
+            r = dhan.quote_data(securities=bseg)
+            ok = isinstance(r, dict) and r.get("status") == "success"
+            if ok:
+                return r
+            if _att < 2:
+                _time.sleep(1.5 * (_att + 1))
         # split and retry
         seg_k = next(iter(bseg))
         ids = bseg[seg_k]
