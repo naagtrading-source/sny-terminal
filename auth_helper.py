@@ -32,6 +32,7 @@ def _cat(s):
     return "Stock" if s in STOCK_SET else "Index" if s in INDEX_SET else "Commodity"
 
 def main():
+    _zero_unds = []
     try:
         from dotenv import load_dotenv
         load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -107,7 +108,25 @@ def main():
                     print(f"[ltp] {symbol} err: {ex}", file=sys.stderr)
                 if und > 0: break
 
+            # retry once on zero: a 0.0 here is usually a rate-limit rejection,
+            # and a bad underlying price breaks ATM strike resolution downstream.
+            if und <= 0 and futs:
+                time.sleep(2.5)
+                try:
+                    sec_id = futs[0]["SEM_SMST_SECURITY_ID"]
+                    r2 = dhan.ohlc_data(securities={dhan_seg: [int(sec_id)]})
+                    inner = r2.get("data",{}) if isinstance(r2, dict) else {}
+                    if isinstance(inner, dict) and "data" in inner:
+                        inner = inner["data"]
+                    data = inner.get(dhan_seg,{}) if isinstance(inner,dict) else {}
+                    for k,v in data.items():
+                        ltp = _f(v.get("last_price",0))
+                        if ltp > 0: und = ltp; break
+                except Exception:
+                    pass
             print(f"[scan] {symbol}: und=₹{und}", file=sys.stderr)
+            if und <= 0:
+                _zero_unds.append(symbol)
 
             if symbol in FUT_ONLY:
                 continue
@@ -165,6 +184,11 @@ def main():
     total = sum(len(v) for v in token_map.values())
     print(f"[done] total {total} tokens, {len(quotes)} quotes", file=sys.stderr)
     result = {"session": {}, "token_map": token_map, "quotes": quotes, "diag": {}, "ck": client_id}
+    if len(_zero_unds) > 2:
+        print(f"[WARN] {len(_zero_unds)} underlyings resolved to 0.0 "
+              f"({', '.join(_zero_unds[:8])}) - token map is DEGRADED. "
+              f"Likely rate-limiting or expired token. Strike resolution will be wrong.",
+              file=sys.stderr)
     print(json.dumps(result))
     sys.stdout.flush()
 
