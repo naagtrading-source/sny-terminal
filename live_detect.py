@@ -187,6 +187,7 @@ def main():
             return _topic_gold
         return _topic_nse  # Index / Stock
     state, tg_sent, gold_sent, goldform_sent, gold100_sent = _load_state()
+    _last_gold_boundary = None   # only scan gold when a NEW 15m candle has closed
     tg_last_vol = {}  # {skey: total_vol at last alert} — event dedup baseline
     print(f"[detect] state loaded: {len(state['prev'])} contracts", file=sys.stderr)
     _last_save = 0.0
@@ -206,8 +207,17 @@ def main():
                     tm_refreshed = time.time()
 
             # ── Gold-block scan (NSE 15m Nifty-50 + MCX commodity front-months) ──
-            if nse or mcx:
+            # Gold blocks only change on 15m candle closes. Scanning every 60s
+            # re-fetches identical data 15x and saturates Dhan's ~1 req/s budget
+            # (which silently starves auth/quotes). Scan once per new 15m candle.
+            _now = int(time.time())
+            _boundary = _now - (_now % 900)
+            _gold_due = (nse or mcx) and (_boundary != _last_gold_boundary)
+            if _gold_due:
+                _last_gold_boundary = _boundary
+            if _gold_due:
                 try:
+                    print(f"[detect] gold scan @ boundary {_boundary}", file=sys.stderr)
                     _gflags = (["--nse"] if nse else []) + (["--mcx"] if mcx else [])
                     gp = subprocess.run([sys.executable, "gold_helper.py"] + _gflags,
                                         capture_output=True, text=True, cwd=BASE, timeout=180)
