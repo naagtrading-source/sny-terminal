@@ -1,9 +1,10 @@
+import time
 """
 auth_helper.py — Dhan-based token discovery.
 Downloads instrument master, finds FUT + ATM options for our symbols,
 returns token_map + quotes JSON. No TOTP, no session login.
 """
-import os, sys, json, re, gc, io, csv, urllib.request, datetime
+import os, sys, json, time, re, gc, io, csv, urllib.request, datetime
 import pytz
 
 def _f(v):
@@ -92,6 +93,8 @@ def main():
             for fr in futs[:3]:
                 try:
                     sec_id = fr["SEM_SMST_SECURITY_ID"]
+                    time.sleep(1.25)   # Dhan ~1 req/sec: unthrottled loops get
+                                       # every other call rejected -> und=0.0
                     r2 = dhan.ohlc_data(securities={dhan_seg: [int(sec_id)]})
                     inner = r2.get("data",{})
                     if isinstance(inner, dict) and "data" in inner:
