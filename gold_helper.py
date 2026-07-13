@@ -100,12 +100,13 @@ def main():
             # a COARSE zone bucket (0.1% of price) so tiny per-scan zone drift
             # cannot defeat dedup and cause repeat alerts.
             from ob_score import score_block as _sb
-            _blk = _sb(bars15, trend_len=120, range_len=50, vol_mult=2.0, min_score=75)
-            if _blk is not None and _blk.score >= 75:
+            _blk = _sb(bars15, trend_len=120, range_len=50, vol_mult=2.0, min_score=90)
+            if _blk is not None and _blk.score >= 90:
                 formations.append({
                     "symbol": sym, "tf": "15m", "dir": _blk.direction,
                     "grade": _blk.grade, "score": _blk.score,
                     "top": round(_blk.top,2), "bot": round(_blk.bot,2),
+                    "close": round(bars15[-1].c,2),
                     "fkey": f"{sym}|{_blk.direction}|{round(_blk.bot,1)}|{round(_blk.top,1)}",
                 })
         except Exception:

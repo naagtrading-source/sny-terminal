@@ -142,7 +142,7 @@ def _fmt_alert(b):
 
 def _get_token_map():
     out = subprocess.run([sys.executable, "auth_helper.py"], capture_output=True,
-                         text=True, cwd=BASE, timeout=180)
+                         text=True, cwd=BASE, timeout=300)
     try:
         return json.loads(out.stdout).get("token_map", {})
     except Exception:
@@ -254,7 +254,7 @@ def main():
                                 f"grade {fo['grade']} {fo['score']} | zone {fo['bot']}-{fo['top']}")
                         _log_signal({"src":"gold_form","sym":fo["symbol"],"tf":fo["tf"],
                             "dir":fo["dir"],"grade":fo["grade"],"score":fo["score"],
-                            "zone_bot":fo["bot"],"zone_top":fo["top"]})
+                            "zone_bot":fo["bot"],"zone_top":fo["top"],"close":fo.get("close")})
                         if token and _dst:
                             _tg_send(token, _dst, fmsg, _topic_for("GoldForm"))
                         if fo.get("score") == 100 and not gold100_sent.get(fk):

@@ -15,7 +15,7 @@ LOTS = {
     "GOLDM":10,"SILVERM":5,"CRUDEOIL":100,"NATURALGAS":1250,"COPPER":2500,
 }
 # Thresholds — ONLY institutional-level activity (very high bar)
-VOL_SPIKE_MULT = 10.0
+VOL_SPIKE_MULT = 50.0
 COMM_SPIKE_MULT = 5.0       # volume jump must be > 5x this contract's own average
 MIN_VOL_JUMP   = 50000     # NSE: ignore jumps under 50k (institutional = large)
 MIN_VOL_JUMP_COMM = 2000   # MCX: commodities trade far lower volume; 50k never fires
@@ -30,9 +30,7 @@ def _tod_factor(now):
     """Time-of-day threshold scaling: open/close are naturally 5-10x heavier,
     so a '10x spike' at 09:20 is routine. Stricter bar in those windows."""
     hm = now.hour * 60 + now.minute
-    if 9*60+15 <= hm < 9*60+45:   return 1.5   # opening rush
-    if 15*60   <= hm <= 15*60+30: return 1.3   # closing auction ramp
-    return 1.0
+    return 1.0   # flat 50x floor all day (time-of-day scaling disabled)
 
 def _spike_mult(cat, now):
     base = COMM_SPIKE_MULT if cat == "Commodity" else VOL_SPIKE_MULT
